@@ -21,9 +21,9 @@ mod app {
         pac::{interrupt, Interrupt},
         prelude::*,
         rtc::{self, Rtc},
-        serial::{Config, Serial},
+        serial::{Config, Serial, Event as SerialEvent},
         spi::{self, Mode as spiMode, Spi},
-        timer::{CounterHz, Delay, Event, Timer},
+        timer::{CounterHz, Delay, Event as TimerEvent, Timer},
         adc::{config::AdcConfig, config::SampleTime, Adc, config::*},
     };
     use systick_monotonic::*;
@@ -35,14 +35,20 @@ mod app {
         DataRate16Bit, FullScaleRange, SlaveAddr as adsSlaveAddr,
     };
 
-    enum state{
-        stopped,
-        started,
+    #[derive(PartialEq)]
+    pub enum State{
+        Stopped,
+        Running,
     }
+
+    static COUNTER_SEC: AtomicUsize = AtomicUsize::new(0);  //N of Sekunden
+    //static COUNTER_WS: AtomicUsize = AtomicUsize::new(0);   //Wattsekunden
 
     #[shared]
     struct Shared {
         s2: Serial<pac::USART2, (Pin<'A', 2, Alternate<7>>, Pin<'A', 3, Alternate<7>>)>,
+        tim3: CounterHz<pac::TIM3>,
+        s: State,
     }
 
     #[local]
@@ -53,8 +59,12 @@ mod app {
         pin_a6: Pin<'A', 6, Analog>, //Current Sense
         pin_a7: Pin<'A', 7, Analog>, //Current Sense
 
-        tim3: CounterHz<pac::TIM3>,
+        pin_b0: Pin<'B', 0, Output<PushPull>>, //MOSFET
+
+        //tim3: CounterHz<pac::TIM3>,
         adc: Adc<pac::ADC1>,
+
+        offset: f32,
     }
 
     #[monotonic(binds = SysTick, default = true)]
@@ -100,26 +110,44 @@ mod app {
         .unwrap();
         writeln!(s2, "Init...").ok();
 
+        //s2.listen(SerialEvent::Rxne);
+
         //TIMER3
         // 16 bit Timer 3u
         let mut tim3 = ctx.device.TIM3.counter_hz(&clocks);
-        tim3.listen(Event::Update);
+        tim3.listen(TimerEvent::Update);
         
 
         //TIMER4
         // 16 bit Timer 4
         let mut tim4 = ctx.device.TIM4.counter_hz(&clocks);
-        tim4.listen(Event::Update);
+        tim4.listen(TimerEvent::Update);
+        
 
+        //ADC
         let pin_a6 = gpioa.pa6.into_analog(); //Voltage Sense
         let pin_a7 = gpioa.pa7.into_analog(); //Current Sense
 
         let mut adc = Adc::adc1(ctx.device.ADC1, true, AdcConfig::default());
         
         
+        //MOSFET
+        let mut pin_b0 = gpiob.pb0.into_push_pull_output();
+        pin_b0.set_low();
 
-        //let sample = adc.convert(&pin_a7, SampleTime::Cycles_480);
-        
+        let mut s_a = [0u16; 8];
+
+        for v in 0..8 {
+            s_a[v] = adc.convert(&pin_a7, SampleTime::Cycles_480);
+        }
+
+
+        let mut sum: f32 = 0.0;
+        for l in 0..8 {
+            sum += s_a[l] as f32 * 3.3/4096.0;
+        }
+
+        let offset = sum/8.0;
         //writeln!(s2, "ADC output: {}", sample).ok();
 
 
@@ -130,8 +158,12 @@ mod app {
         //let time = irtc.get_datetime();
         //writeln!(s2, "{:#?}", time).unwrap();
 
-        tim3.start(1.Hz()).ok();
+        //tim3.start(1.Hz()).ok();
 
+        let s = State::Stopped;
+
+        writeln!(s2, "BatteryTester \n Press Button to Start").ok();
+        
 
         //Button Interrupt
         let mut pin_a0 = gpioa.pa0.into_pull_up_input();
@@ -143,7 +175,7 @@ mod app {
 
         let mono = Systick::new(ctx.core.SYST, 100_000_000);
         
-        (Shared {s2}, Local {led, tim3, pin_a0, pin_a6, pin_a7, adc}, init::Monotonics(mono))
+        (Shared {s2, tim3, s}, Local {led, pin_a0, pin_a6, pin_a7, pin_b0, adc, offset}, init::Monotonics(mono))
     }
 
     // Background task, runs whenever no other tasks are running
@@ -155,14 +187,22 @@ mod app {
     }
 
     //Timer3 Interrupt
-    #[task(binds = TIM3, local = [tim3, led, pin_a6, pin_a7, adc], shared = [s2], priority = 6)]
+    #[task(binds = TIM3, local = [led, pin_a6, pin_a7, adc, offset], shared = [s2, tim3], priority = 6)]
     fn on_tim3(mut ctx: on_tim3::Context) {
-        ctx.local.tim3.clear_interrupt(Event::Update);
+        ctx.shared.tim3.lock(|tim3|{
+            tim3.clear_interrupt(TimerEvent::Update);
+        });
+
+        //ctx.local.tim3.clear_interrupt(TimerEvent::Update);
+
+
         ctx.local.led.toggle();
 
         let samplei = ctx.local.adc.convert(ctx.local.pin_a7, SampleTime::Cycles_480);
 
         let v_acs: f32 = samplei as f32 * 3.3/4096.0;
+        let v_acs_off = v_acs - *ctx.local.offset;
+        let i_acs = v_acs_off * 10.0;
 
         let samplev = ctx.local.adc.convert(ctx.local.pin_a6, SampleTime::Cycles_480);
 
@@ -170,18 +210,79 @@ mod app {
 
         v_vol = v_vol * 375.0/75.0;
 
+        let s = COUNTER_SEC.fetch_add(1, Ordering::SeqCst);
+
+        let ws = v_vol * i_acs;
+
+
         ctx.shared.s2.lock(|s2|{
-            writeln!(s2, "V_ACS: {}", v_acs).ok();
-            writeln!(s2, "V_VOL: {}", v_vol).ok();
+            writeln!(s2, "RUNTIME: {} s", s).ok();
+            writeln!(s2, "I_ACS  : {} A", i_acs).ok();
+            writeln!(s2, "V_VOL  : {} V", v_vol).ok();
+            writeln!(s2, "WS     : {} Ws", ws).ok();
         });
     }
 
-    #[task(binds = EXTI0, local = [pin_a0], shared = [s2])]
+    #[task(binds = EXTI0, local = [pin_a0, pin_b0], shared = [s2, s, tim3])]
     fn on_button(mut ctx: on_button::Context){
         ctx.local.pin_a0.clear_interrupt_pending_bit();
+        
+        ctx.shared.s.lock(|s|{
+            if *s == State::Stopped{
+
+                ctx.shared.s2.lock(|s2|{
+                    writeln!(s2, "Starting").ok();
+                });
+
+                ctx.local.pin_b0.set_high();
+                ctx.shared.tim3.lock(|tim3|{
+                    tim3.start(1.Hz());
+                });
+                *s = State::Running;
+            }
+            else if *s == State::Running{
+
+                ctx.shared.s2.lock(|s2|{
+                    writeln!(s2, "Stopping").ok();
+                });
+
+                COUNTER_SEC.swap(0, Ordering::SeqCst);
+
+                ctx.local.pin_b0.set_low();
+                ctx.shared.tim3.lock(|tim3|{
+                    tim3.cancel();
+                });
+                *s = State::Stopped;
+            }
+        });
+
+    }
+
+
+
+
+
+    //unlistend to interupt should never execute
+    #[task(binds = USART2, local = [], shared = [s2])]
+    fn uart2recv(mut ctx: uart2recv::Context){
 
         ctx.shared.s2.lock(|s2|{
-            writeln!(s2, "button interrupt").ok();
+            
+            let mut buf = [0u8; 64];
+
+            let mut i = 0;
+
+            while s2.is_rx_not_empty() {
+                if let Ok(r) = s2.read(){
+                    buf[i] = r;
+                    i += 1;
+                }else{
+                    break;
+                }
+            }
+
+            writeln!(s2, "{}:{:?}", i, buf).ok();
+            
         });
 
     }
