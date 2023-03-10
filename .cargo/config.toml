@@ -1,0 +1,21 @@
+[alias]     # command aliases
+b = "build"
+c = "check"
+t = "test"
+r = "run"
+br = "build --release"
+
+
+[target.thumbv7em-none-eabihf]
+rustflags = [
+  "-C", "link-arg=-Tlink.x",
+  #"-C", "opt-level=s",
+]
+
+[build]
+target = "thumbv7em-none-eabihf"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+debug = true

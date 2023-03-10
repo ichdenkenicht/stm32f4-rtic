@@ -1,0 +1,46 @@
+[package]
+name = "stm32f4-rtic"
+version = "0.1.0"
+authors = ["Dix Goerlich"]
+edition = "2021"
+
+[dependencies]
+cortex-m-rtic = "1.1.3"
+systick-monotonic = "1.0.1"
+
+###peripherals
+#shared bus
+shared-bus = {version = "0.2.5", features = ["cortex-m"]}
+#ADS1115
+ads1x1x = "0.2.2"
+#ds3231
+#ds323x = "0.5.0"
+#eeprom24x = "0.5.0"
+#w5500
+#w5500-ll = "0.10.4"
+#w5500-hl = {version = "0.9.0", features = ["embedded-hal"] }
+
+#PowerMeterLib
+#pmlib-rs = {path = "../pmlib-rs", version = "*", features = ["fast"]}
+
+#[dependencies.rtt-target]
+#version = "0.3.1"
+#features = ["cortex-m"]
+
+#[dependencies.panic-rtt-target]
+#version = "0.1.2"
+#features = ["cortex-m"]
+
+[dependencies.stm32f4xx-hal]
+version = "0.14.0"
+features = ["stm32f411", "rt", "rtic-monotonic"]
+
+[dependencies.stm32f4]
+version = "0.15.1"
+features = ["stm32f411", "rt"]
+
+
+[profile.release]
+codegen-units = 1 #1 better optimizations  
+debug = true # symbols are nice and they don't increase the size on Flash
+lto = true # better optimizations
