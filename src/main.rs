@@ -49,6 +49,7 @@ mod app {
         s2: Serial<pac::USART2, (Pin<'A', 2, Alternate<7>>, Pin<'A', 3, Alternate<7>>)>,
         tim3: CounterHz<pac::TIM3>,
         s: State,
+        ws: f32,
     }
 
     #[local]
@@ -161,6 +162,7 @@ mod app {
         //tim3.start(1.Hz()).ok();
 
         let s = State::Stopped;
+        let ws: f32 = 0.0;
 
         writeln!(s2, "BatteryTester \n Press Button to Start").ok();
         
@@ -175,7 +177,7 @@ mod app {
 
         let mono = Systick::new(ctx.core.SYST, 100_000_000);
         
-        (Shared {s2, tim3, s}, Local {led, pin_a0, pin_a6, pin_a7, pin_b0, adc, offset}, init::Monotonics(mono))
+        (Shared {s2, tim3, s, ws}, Local {led, pin_a0, pin_a6, pin_a7, pin_b0, adc, offset}, init::Monotonics(mono))
     }
 
     // Background task, runs whenever no other tasks are running
@@ -187,14 +189,11 @@ mod app {
     }
 
     //Timer3 Interrupt
-    #[task(binds = TIM3, local = [led, pin_a6, pin_a7, adc, offset], shared = [s2, tim3], priority = 6)]
+    #[task(binds = TIM3, local = [led, pin_a6, pin_a7, adc, offset], shared = [s2, tim3, ws], priority = 6)]
     fn on_tim3(mut ctx: on_tim3::Context) {
         ctx.shared.tim3.lock(|tim3|{
             tim3.clear_interrupt(TimerEvent::Update);
         });
-
-        //ctx.local.tim3.clear_interrupt(TimerEvent::Update);
-
 
         ctx.local.led.toggle();
 
@@ -212,18 +211,25 @@ mod app {
 
         let s = COUNTER_SEC.fetch_add(1, Ordering::SeqCst);
 
-        let ws = v_vol * i_acs;
+        let ws_now = v_vol * i_acs;
+
+        let mut ws_until = 0.0;
+
+        ctx.shared.ws.lock(|ws|{
+            ws_until = *ws;
+            *ws += ws_now;
+        });
 
 
         ctx.shared.s2.lock(|s2|{
             writeln!(s2, "RUNTIME: {} s", s).ok();
             writeln!(s2, "I_ACS  : {} A", i_acs).ok();
             writeln!(s2, "V_VOL  : {} V", v_vol).ok();
-            writeln!(s2, "WS     : {} Ws", ws).ok();
+            writeln!(s2, "WS     : {} Ws", ws_until).ok();
         });
     }
 
-    #[task(binds = EXTI0, local = [pin_a0, pin_b0], shared = [s2, s, tim3])]
+    #[task(binds = EXTI0, local = [pin_a0, pin_b0], shared = [s2, s, tim3, ws])]
     fn on_button(mut ctx: on_button::Context){
         ctx.local.pin_a0.clear_interrupt_pending_bit();
         
@@ -246,6 +252,10 @@ mod app {
                     writeln!(s2, "Stopping").ok();
                 });
 
+                ctx.shared.ws.lock(|ws|{
+                    *ws = 0.0;
+                });
+
                 COUNTER_SEC.swap(0, Ordering::SeqCst);
 
                 ctx.local.pin_b0.set_low();
@@ -262,26 +272,28 @@ mod app {
 
 
 
-    //unlistend to interupt should never execute
+    //meh no fifo needs to stream of single bytes
     #[task(binds = USART2, local = [], shared = [s2])]
     fn uart2recv(mut ctx: uart2recv::Context){
 
         ctx.shared.s2.lock(|s2|{
+            //s2.unlisten(SerialEvent::Rxne);
             
-            let mut buf = [0u8; 64];
-
-            let mut i = 0;
+            let mut buf: u8 = 0;
 
             while s2.is_rx_not_empty() {
                 if let Ok(r) = s2.read(){
-                    buf[i] = r;
-                    i += 1;
+                    buf = r;
                 }else{
                     break;
                 }
             }
+            
 
-            writeln!(s2, "{}:{:?}", i, buf).ok();
+            writeln!(s2, "{:?}", buf).ok();
+            
+
+            //s2.listen(SerialEvent::Rxne);
             
         });
 
