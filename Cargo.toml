@@ -1,5 +1,5 @@
 [package]
-name = "stm32f4-rtic"
+name = "stm32f4-dc-power-meter"
 version = "0.1.0"
 authors = ["Dix Goerlich"]
 edition = "2021"
@@ -10,9 +10,9 @@ systick-monotonic = "1.0.1"
 
 ###peripherals
 #shared bus
-shared-bus = {version = "0.2.5", features = ["cortex-m"]}
+#shared-bus = {version = "0.2.5", features = ["cortex-m"]}
 #ADS1115
-ads1x1x = "0.2.2"
+#ads1x1x = "0.2.2"
 #ds3231
 #ds323x = "0.5.0"
 #eeprom24x = "0.5.0"
