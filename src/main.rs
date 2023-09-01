@@ -23,7 +23,7 @@ mod app {
         rtc::{self, Rtc},
         serial::{Config, Serial, Event as SerialEvent},
         spi::{self, Mode as spiMode, Spi},
-        timer::{CounterHz, Delay, Event as TimerEvent, Timer},
+        timer::{CounterHz, Delay, Event as TimerEvent, Timer, Channel, PwmHz, Channel4, ChannelBuilder},
         adc::{config::AdcConfig, config::SampleTime, Adc, config::*},
     };
     use systick_monotonic::*;
@@ -46,10 +46,12 @@ mod app {
 
     #[shared]
     struct Shared {
-        s2: Serial<pac::USART2, (Pin<'A', 2, Alternate<7>>, Pin<'A', 3, Alternate<7>>)>,
-        tim3: CounterHz<pac::TIM3>,
+        //s2: Serial<pac::USART2, (Pin<'A', 2, Alternate<7>>, Pin<'A', 3, Alternate<7>>)>,
+        s2: Serial<pac::USART2>,
+        tim5: CounterHz<pac::TIM5>,
         s: State,
         ws: f32,
+        adc: Adc<pac::ADC1>,
     }
 
     #[local]
@@ -57,15 +59,19 @@ mod app {
         led: Pin<'C', 13, Output<PushPull>>,
         pin_a0: Pin<'A', 0, Input>, //Button
 
-        pin_a6: Pin<'A', 6, Analog>, //Current Sense
+
+        pin_a1: Pin<'A', 1, Analog>, //Poti Sense
+        pin_a6: Pin<'A', 6, Analog>, //Voltage Sense
         pin_a7: Pin<'A', 7, Analog>, //Current Sense
 
         pin_b0: Pin<'B', 0, Output<PushPull>>, //MOSFET
 
-        //tim3: CounterHz<pac::TIM3>,
-        adc: Adc<pac::ADC1>,
+        tim3pwm: PwmHz<pac::TIM3, ChannelBuilder<pac::TIM3, 3>>,
+        
 
         offset: f32,
+
+        tim4: CounterHz<pac::TIM4>,
     }
 
     #[monotonic(binds = SysTick, default = true)]
@@ -113,23 +119,45 @@ mod app {
 
         //s2.listen(SerialEvent::Rxne);
 
-        //TIMER3
-        // 16 bit Timer 3u
-        let mut tim3 = ctx.device.TIM3.counter_hz(&clocks);
-        tim3.listen(TimerEvent::Update);
+        //TIMER5
+        // 32? bit Timer 5
+        let mut tim5 = ctx.device.TIM5.counter_hz(&clocks);
+        tim5.listen(TimerEvent::Update);
         
 
         //TIMER4
         // 16 bit Timer 4
         let mut tim4 = ctx.device.TIM4.counter_hz(&clocks);
         tim4.listen(TimerEvent::Update);
+
+
+        //Timer3 for 25khz PWM
+
+
+        //let mut pin_b1 = gpiob.pb1.into_alternate();
+
+        let channel = Channel4::new(gpiob.pb1);
+
+        let mut tim3pwm = ctx.device.TIM3.pwm_hz(channel, 25.kHz(), &clocks);
+
+
+  
+        
+        tim3pwm.enable(Channel::C4);
+        let pwmmax = tim3pwm.get_max_duty();
+        tim3pwm.set_duty(Channel::C4, pwmmax);
+        //tim3pwm.set_period(period)
         
 
         //ADC
         let pin_a6 = gpioa.pa6.into_analog(); //Voltage Sense
         let pin_a7 = gpioa.pa7.into_analog(); //Current Sense
+        let pin_a1 = gpioa.pa1.into_analog(); //Poti Sense
 
         let mut adc = Adc::adc1(ctx.device.ADC1, true, AdcConfig::default());
+
+
+        
         
         
         //MOSFET
@@ -159,7 +187,7 @@ mod app {
         //let time = irtc.get_datetime();
         //writeln!(s2, "{:#?}", time).unwrap();
 
-        //tim3.start(1.Hz()).ok();
+        tim4.start(10.Hz()).ok();
 
         let s = State::Stopped;
         let ws: f32 = 0.0;
@@ -177,7 +205,7 @@ mod app {
 
         let mono = Systick::new(ctx.core.SYST, 100_000_000);
         
-        (Shared {s2, tim3, s, ws}, Local {led, pin_a0, pin_a6, pin_a7, pin_b0, adc, offset}, init::Monotonics(mono))
+        (Shared {s2, tim5, s, ws, adc}, Local {led, pin_a0, pin_a1, pin_a6, pin_a7, pin_b0, offset, tim4, tim3pwm}, init::Monotonics(mono))
     }
 
     // Background task, runs whenever no other tasks are running
@@ -188,22 +216,32 @@ mod app {
         }
     }
 
-    //Timer3 Interrupt
-    #[task(binds = TIM3, local = [led, pin_a6, pin_a7, adc, offset], shared = [s2, tim3, ws], priority = 6)]
-    fn on_tim3(mut ctx: on_tim3::Context) {
-        ctx.shared.tim3.lock(|tim3|{
-            tim3.clear_interrupt(TimerEvent::Update);
+    //Timer5 Interrupt
+    #[task(binds = TIM5, local = [led, pin_a6, pin_a7, offset], shared = [s2, tim5, ws, adc])]
+    fn on_tim5(mut ctx: on_tim5::Context) {
+        ctx.shared.tim5.lock(|tim5|{
+            tim5.clear_interrupt(TimerEvent::Update);
         });
 
         ctx.local.led.toggle();
 
-        let samplei = ctx.local.adc.convert(ctx.local.pin_a7, SampleTime::Cycles_480);
+        let mut samplei: u16 = 0;
+        let mut samplev: u16 = 0;
+
+
+        ctx.shared.adc.lock(|adc|{
+            samplei = adc.convert(ctx.local.pin_a7, SampleTime::Cycles_480);
+        });
+
+        ctx.shared.adc.lock(|adc|{
+            samplev = adc.convert(ctx.local.pin_a6, SampleTime::Cycles_480);
+        });
 
         let v_acs: f32 = samplei as f32 * 3.3/4096.0;
         let v_acs_off = v_acs - *ctx.local.offset;
         let i_acs = v_acs_off * 10.0;
 
-        let samplev = ctx.local.adc.convert(ctx.local.pin_a6, SampleTime::Cycles_480);
+        //let samplev = ctx.local.adc.convert(ctx.local.pin_a6, SampleTime::Cycles_480);
 
         let mut v_vol: f32 = samplev as f32 * 3.3/4096.0;
 
@@ -229,7 +267,7 @@ mod app {
         });
     }
 
-    #[task(binds = EXTI0, local = [pin_a0, pin_b0], shared = [s2, s, tim3, ws])]
+    #[task(binds = EXTI0, local = [pin_a0, pin_b0], shared = [s2, s, tim5, ws])]
     fn on_button(mut ctx: on_button::Context){
         ctx.local.pin_a0.clear_interrupt_pending_bit();
         
@@ -241,8 +279,8 @@ mod app {
                 });
 
                 ctx.local.pin_b0.set_high();
-                ctx.shared.tim3.lock(|tim3|{
-                    tim3.start(1.Hz());
+                ctx.shared.tim5.lock(|tim5|{
+                    tim5.start(1.Hz());
                 });
                 *s = State::Running;
             }
@@ -259,8 +297,8 @@ mod app {
                 COUNTER_SEC.swap(0, Ordering::SeqCst);
 
                 ctx.local.pin_b0.set_low();
-                ctx.shared.tim3.lock(|tim3|{
-                    tim3.cancel();
+                ctx.shared.tim5.lock(|tim5|{
+                    tim5.cancel();
                 });
                 *s = State::Stopped;
             }
@@ -269,7 +307,27 @@ mod app {
     }
 
 
+    #[task(binds = TIM4, local = [tim4, pin_a1, tim3pwm], shared = [s2, adc])]
+    fn on_tim4(mut ctx: on_tim4::Context){
+        ctx.local.tim4.clear_interrupt(TimerEvent::Update);
 
+
+        let mut poti: u16 = 0;
+        ctx.shared.adc.lock(|adc|{
+            poti = adc.convert(ctx.local.pin_a1, SampleTime::Cycles_144);
+        });
+
+        ctx.local.tim3pwm.set_duty(Channel::C4, poti);
+
+        /*
+        ctx.shared.s2.lock(|s2|{
+            writeln!(s2, "POT: {}", poti).ok();
+
+        });
+        */
+        
+
+    }
 
 
     //meh no fifo needs to stream of single bytes
