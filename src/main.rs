@@ -28,21 +28,12 @@ mod app {
     };
     use systick_monotonic::*;
 
-    use shared_bus;
-    //ADS1115
-    use ads1x1x::{
-        channel, ic as ads1x1xIc, mode, Ads1x1x, ComparatorPolarity, ComparatorQueue,
-        DataRate16Bit, FullScaleRange, SlaveAddr as adsSlaveAddr,
-    };
+    //use shared_bus;
 
-    enum state{
-        stopped,
-        started,
-    }
 
     #[shared]
     struct Shared {
-        s2: Serial<pac::USART2, (Pin<'A', 2, Alternate<7>>, Pin<'A', 3, Alternate<7>>)>,
+        s2: Serial<pac::USART2>,
     }
 
     #[local]
@@ -50,11 +41,11 @@ mod app {
         led: Pin<'C', 13, Output<PushPull>>,
         pin_a0: Pin<'A', 0, Input>, //Button
 
-        pin_a6: Pin<'A', 6, Analog>, //Current Sense
-        pin_a7: Pin<'A', 7, Analog>, //Current Sense
-
         tim3: CounterHz<pac::TIM3>,
-        adc: Adc<pac::ADC1>,
+
+        //adc: Adc<pac::ADC1>,
+        //pin_a6: Pin<'A', 6, Analog>, //Voltage Sense
+        //pin_a7: Pin<'A', 7, Analog>, //Current Sense
     }
 
     #[monotonic(binds = SysTick, default = true)]
@@ -100,6 +91,8 @@ mod app {
         .unwrap();
         writeln!(s2, "Init...").ok();
 
+
+
         //TIMER3
         // 16 bit Timer 3u
         let mut tim3 = ctx.device.TIM3.counter_hz(&clocks);
@@ -111,10 +104,13 @@ mod app {
         let mut tim4 = ctx.device.TIM4.counter_hz(&clocks);
         tim4.listen(Event::Update);
 
-        let pin_a6 = gpioa.pa6.into_analog(); //Voltage Sense
-        let pin_a7 = gpioa.pa7.into_analog(); //Current Sense
 
-        let mut adc = Adc::adc1(ctx.device.ADC1, true, AdcConfig::default());
+
+        //ADC
+        //let pin_a6 = gpioa.pa6.into_analog(); //Voltage Sense
+        //let pin_a7 = gpioa.pa7.into_analog(); //Current Sense
+
+        //let mut adc = Adc::adc1(ctx.device.ADC1, true, AdcConfig::default());
         
         
 
@@ -143,7 +139,7 @@ mod app {
 
         let mono = Systick::new(ctx.core.SYST, 100_000_000);
         
-        (Shared {s2}, Local {led, tim3, pin_a0, pin_a6, pin_a7, adc}, init::Monotonics(mono))
+        (Shared {s2}, Local {led, tim3, pin_a0}, init::Monotonics(mono))
     }
 
     // Background task, runs whenever no other tasks are running
@@ -155,25 +151,11 @@ mod app {
     }
 
     //Timer3 Interrupt
-    #[task(binds = TIM3, local = [tim3, led, pin_a6, pin_a7, adc], shared = [s2], priority = 6)]
+    #[task(binds = TIM3, local = [tim3, led], shared = [s2], priority = 6)]
     fn on_tim3(mut ctx: on_tim3::Context) {
         ctx.local.tim3.clear_interrupt(Event::Update);
         ctx.local.led.toggle();
 
-        let samplei = ctx.local.adc.convert(ctx.local.pin_a7, SampleTime::Cycles_480);
-
-        let v_acs: f32 = samplei as f32 * 3.3/4096.0;
-
-        let samplev = ctx.local.adc.convert(ctx.local.pin_a6, SampleTime::Cycles_480);
-
-        let mut v_vol: f32 = samplev as f32 * 3.3/4096.0;
-
-        v_vol = v_vol * 375.0/75.0;
-
-        ctx.shared.s2.lock(|s2|{
-            writeln!(s2, "V_ACS: {}", v_acs).ok();
-            writeln!(s2, "V_VOL: {}", v_vol).ok();
-        });
     }
 
     #[task(binds = EXTI0, local = [pin_a0], shared = [s2])]
