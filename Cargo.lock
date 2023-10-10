@@ -61,6 +61,12 @@ checksum = "46afbd2983a5d5a7bd740ccb198caf5b82f45c40c09c0eed36052d91cb92e719"
 
 [[package]]
 name = "bitflags"
+version = "1.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
+
+[[package]]
+name = "bitflags"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4682ae6287fcf752ecaabbfcc7b6f9b72aa33933dc23a554d853aea8eea8635"
@@ -300,6 +306,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpu9250"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "092728a25629bd7952af8589585732e13a2d6b93c5c1ef37712524c60c766a43"
+dependencies = [
+ "bitflags 1.3.2",
+ "embedded-hal 0.2.7",
+]
+
+[[package]]
 name = "nb"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -475,6 +491,7 @@ name = "stm32f4-rtic"
 version = "0.1.0"
 dependencies = [
  "cortex-m-rtic",
+ "mpu9250",
  "shared-bus",
  "stm32f4",
  "stm32f4xx-hal",
@@ -488,7 +505,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c35360daaceb356866a3f840e845dd09c1ef69aed52637520b4c5c409c10cdc0"
 dependencies = [
  "bare-metal 1.0.0",
- "bitflags",
+ "bitflags 2.4.0",
  "cortex-m 0.7.7",
  "cortex-m-rt",
  "embedded-dma",

@@ -20,6 +20,8 @@ shared-bus = {version = "0.2.5", features = ["cortex-m"]}
 #w5500-ll = "0.10.4"
 #w5500-hl = {version = "0.9.0", features = ["embedded-hal"] }
 
+mpu9250 = {version = "0.25.0", features =["i2c"]}
+
 #PowerMeterLib
 #pmlib-rs = {path = "../pmlib-rs", version = "*", features = ["fast"]}
 
@@ -30,6 +32,8 @@ shared-bus = {version = "0.2.5", features = ["cortex-m"]}
 #[dependencies.panic-rtt-target]
 #version = "0.1.2"
 #features = ["cortex-m"]
+
+
 
 [dependencies.stm32f4xx-hal]
 version = "0.17.1"

@@ -5,11 +5,12 @@
 
 use rtic::app;
 
-#[app(device = stm32f4xx_hal::pac, peripherals = true, dispatchers = [USART6, SPI4, SPI5])]
+#[app(device = stm32f4xx_hal::pac, peripherals = true, dispatchers = [SPI4, SPI5])]
 mod app {
-    use core::fmt::Write;
+    use core::fmt::{Write, write};
     use core::panic::PanicInfo;
     use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::usize;
     use rtic::export::CriticalSection;
 
     use stm32f4xx_hal::gpio::Analog;
@@ -28,7 +29,11 @@ mod app {
     };
     use systick_monotonic::*;
 
+    use mpu9250::{Mpu9250, ImuMeasurements, Imu, I2cDevice, Dlpf, MpuConfig, AccelDataRate, GyroTempDataRate};
+
     //use shared_bus;
+
+    static COUNTER_INT: AtomicUsize = AtomicUsize::new(0);
 
 
     #[shared]
@@ -40,8 +45,11 @@ mod app {
     struct Local {
         led: Pin<'C', 13, Output<PushPull>>,
         pin_a0: Pin<'A', 0, Input>, //Button
+        pin_b5: Pin<'B', 5, Input>,
 
         tim3: CounterHz<pac::TIM3>,
+
+        imu: Mpu9250<I2cDevice<I2c<pac::I2C1>>, Imu>,
 
         //adc: Adc<pac::ADC1>,
         //pin_a6: Pin<'A', 6, Analog>, //Voltage Sense
@@ -49,7 +57,7 @@ mod app {
     }
 
     #[monotonic(binds = SysTick, default = true)]
-    type Tonic = Systick<10000>;
+    type Tonic = Systick<1000>;
 
     #[init]
     fn init(mut ctx: init::Context) -> (Shared, Local, init::Monotonics) {
@@ -91,20 +99,35 @@ mod app {
         .unwrap();
         writeln!(s2, "Init...").ok();
 
+        //I2C
+
+        let pin_b6 = gpiob.pb6; //SCL
+        let pin_b7 = gpiob.pb7; //SDA
+
+        let i2c = ctx.device.I2C1.i2c(
+            (pin_b6, pin_b7),
+            i2cMode::Standard {
+                frequency: 400.kHz(),
+            },
+            &clocks,
+        );
+        writeln!(s2, "i2c ok").ok();
 
 
         //TIMER3
-        // 16 bit Timer 3u
+        // 16 bit Timer 3
         let mut tim3 = ctx.device.TIM3.counter_hz(&clocks);
         tim3.listen(Event::Update);
         
 
         //TIMER4
         // 16 bit Timer 4
-        let mut tim4 = ctx.device.TIM4.counter_hz(&clocks);
-        tim4.listen(Event::Update);
+        //let mut tim4 = ctx.device.TIM4.counter_hz(&clocks);
+        //tim4.listen(Event::Update);
 
+        let mut del = ctx.device.TIM4.delay_us(&clocks);
 
+        writeln!(s2, "timer ok").ok();
 
         //ADC
         //let pin_a6 = gpioa.pa6.into_analog(); //Voltage Sense
@@ -126,6 +149,30 @@ mod app {
         //let time = irtc.get_datetime();
         //writeln!(s2, "{:#?}", time).unwrap();
 
+        
+        
+
+        let mut imu = Mpu9250::imu_default(i2c, &mut del).unwrap();
+
+        let temp = imu.temp().unwrap();
+        writeln!(s2, "{}", temp).ok();
+
+        imu.sample_rate_divisor(4).unwrap();
+        
+        imu.accel_data_rate(AccelDataRate::DlpfConf(Dlpf::_3)).unwrap();
+        imu.gyro_temp_data_rate(GyroTempDataRate::DlpfConf(Dlpf::_3)).unwrap();
+        
+        
+
+        //imu.calibrate_at_rest::<stm32f4xx_hal::timer::Delay<stm32f4xx_hal::pac::TIM4, 1000000>, [f32; 3]>(&mut del).unwrap();
+
+        imu.enable_interrupts(mpu9250::InterruptEnable::RAW_RDY_EN).unwrap();
+
+        let all: ImuMeasurements<[f32; 3]> = imu.all().unwrap();
+
+        writeln!(s2, "{:#?}", all).ok();
+
+
         tim3.start(1.Hz()).ok();
 
 
@@ -135,11 +182,17 @@ mod app {
         pin_a0.trigger_on_edge(&mut ctx.device.EXTI, Edge::Falling);
         pin_a0.enable_interrupt(&mut ctx.device.EXTI);
 
+        //MPU Interrupt
+        let mut pin_b5 = gpiob.pb5.into_pull_up_input();
+        pin_b5.make_interrupt_source(&mut sys_cfg);
+        pin_b5.trigger_on_edge(&mut ctx.device.EXTI, Edge::Rising);
+        pin_b5.enable_interrupt(&mut ctx.device.EXTI);
+
 
 
         let mono = Systick::new(ctx.core.SYST, 100_000_000);
         
-        (Shared {s2}, Local {led, tim3, pin_a0}, init::Monotonics(mono))
+        (Shared {s2}, Local {led, tim3, pin_a0, pin_b5, imu}, init::Monotonics(mono))
     }
 
     // Background task, runs whenever no other tasks are running
@@ -156,6 +209,12 @@ mod app {
         ctx.local.tim3.clear_interrupt(Event::Update);
         ctx.local.led.toggle();
 
+        let val = COUNTER_INT.swap(0, Ordering::SeqCst);
+
+        ctx.shared.s2.lock(|s2|{
+            writeln!(s2, "last second: {}", val).ok();
+        });
+
     }
 
     #[task(binds = EXTI0, local = [pin_a0], shared = [s2])]
@@ -166,6 +225,22 @@ mod app {
             writeln!(s2, "button interrupt").ok();
         });
 
+    }
+
+    #[task(binds = EXTI9_5, local = [pin_b5, imu], shared = [s2])]
+    fn on_mpu(mut ctx: on_mpu::Context){
+        
+        COUNTER_INT.fetch_add(1, Ordering::SeqCst);
+
+        let all: ImuMeasurements<[f32; 3]> = ctx.local.imu.all().unwrap();
+
+        /*
+        ctx.shared.s2.lock(|s2|{
+            writeln!(s2, "{:#?}", all).ok();
+        });
+        */
+
+        ctx.local.pin_b5.clear_interrupt_pending_bit();
     }
 
 
