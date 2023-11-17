@@ -154,23 +154,56 @@ mod app {
 
         let mut imu = Mpu9250::imu_default(i2c, &mut del).unwrap();
 
-        let temp = imu.temp().unwrap();
-        writeln!(s2, "{}", temp).ok();
+        //let temp = imu.temp().unwrap();
+        //writeln!(s2, "{}", temp).ok();
 
-        imu.sample_rate_divisor(4).unwrap();
+        imu.sample_rate_divisor(99).unwrap();
         
         imu.accel_data_rate(AccelDataRate::DlpfConf(Dlpf::_3)).unwrap();
         imu.gyro_temp_data_rate(GyroTempDataRate::DlpfConf(Dlpf::_3)).unwrap();
+
+
         
+        //super precise :)
+        
+        let mut valuesatrest: [ImuMeasurements<[f32; 3]>; 10] = [ImuMeasurements {accel: [0.0; 3], gyro: [0.0; 3], temp: 0.0 }; 10];
+        let mut means: ImuMeasurements<[f32; 3]> = ImuMeasurements {accel: [0.0; 3], gyro: [0.0; 3], temp: 0.0 };
+        let mut sum: ImuMeasurements<[f32; 3]> = ImuMeasurements {accel: [0.0; 3], gyro: [0.0; 3], temp: 0.0 };
+        writeln!(s2, "Calibrating...").ok();
+
+        for n in 0..10 as usize{
+            del.delay_us(1000000u32);
+            valuesatrest[n] = imu.all().unwrap();
+
+            
+        }
+
+        //writeln!(s2, "{:#?}", valuesatrest).ok();
+
+        for n in valuesatrest{
+            for k in 0..3{
+                sum.accel[k] += n.accel[k];
+                sum.gyro[k] +=  n.gyro[k];
+            }
+        }
+        for l in 0..3{
+            means.accel[l] = (-1.0)*sum.accel[l]/10.0;
+            means.gyro[l] = (-1.0)*sum.gyro[l]/10.0;
+        }
+        means.accel[2] -= 9.81;
+        writeln!(s2, "{:#?}", means).ok();
+
+        imu.set_accel_bias(true, means.accel).unwrap();
+        imu.set_gyro_bias(true, means.gyro).unwrap();
         
 
         //imu.calibrate_at_rest::<stm32f4xx_hal::timer::Delay<stm32f4xx_hal::pac::TIM4, 1000000>, [f32; 3]>(&mut del).unwrap();
 
         imu.enable_interrupts(mpu9250::InterruptEnable::RAW_RDY_EN).unwrap();
 
-        let all: ImuMeasurements<[f32; 3]> = imu.all().unwrap();
+        //let all: ImuMeasurements<[f32; 3]> = imu.all().unwrap();
 
-        writeln!(s2, "{:#?}", all).ok();
+        //writeln!(s2, "{:#?}", all).ok();
 
 
         tim3.start(1.Hz()).ok();
@@ -234,11 +267,12 @@ mod app {
 
         let all: ImuMeasurements<[f32; 3]> = ctx.local.imu.all().unwrap();
 
-        /*
+        
         ctx.shared.s2.lock(|s2|{
-            writeln!(s2, "{:#?}", all).ok();
+            //writeln!(s2, "{:#?}", all).ok();
+            writeln!(s2, "/*{:.4},{:.4},{:.4},{:.4},{:.4},{:.4}*/", all.gyro[0], all.gyro[1], all.gyro[2], all.accel[0], all.accel[1], all.accel[2]).ok();
         });
-        */
+        
 
         ctx.local.pin_b5.clear_interrupt_pending_bit();
     }
