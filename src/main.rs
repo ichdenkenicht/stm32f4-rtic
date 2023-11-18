@@ -24,7 +24,7 @@ mod app {
         rtc::{self, Rtc},
         serial::{Config, Serial},
         spi::{self, Mode as spiMode, Spi},
-        timer::{CounterHz, Delay, Event, Timer},
+        timer::{CounterHz, Delay, Event, Timer, Pwm, Channel, Channel1, Channel2, Channel3, Channel4},
         adc::{config::AdcConfig, config::SampleTime, Adc, config::*},
     };
     use systick_monotonic::*;
@@ -114,6 +114,24 @@ mod app {
         writeln!(s2, "i2c ok").ok();
 
 
+
+        //TIMER1
+        //advanced motor Timer
+
+        let atimpins = (Channel1::new(gpioa.pa8),
+                                                      Channel2::new(gpioa.pa9),
+                                                      Channel3::new(gpioa.pa10),
+                                                      Channel4::new(gpioa.pa11));
+
+        let mut atim1 = ctx.device.TIM1.pwm_hz(atimpins, 1000.Hz(), &clocks);
+
+        
+        
+        let (mut t1ch1, mut t1ch2, mut t1ch3, mut t1ch4) = atim1.split();
+
+        
+        
+
         //TIMER3
         // 16 bit Timer 3
         let mut tim3 = ctx.device.TIM3.counter_hz(&clocks);
@@ -191,7 +209,7 @@ mod app {
             means.gyro[l] = (-1.0)*sum.gyro[l]/10.0;
         }
         means.accel[2] -= 9.81;
-        writeln!(s2, "{:#?}", means).ok();
+        //writeln!(s2, "{:#?}", means).ok();
 
         imu.set_accel_bias(true, means.accel).unwrap();
         imu.set_gyro_bias(true, means.gyro).unwrap();
