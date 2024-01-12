@@ -22,6 +22,11 @@ shared-bus = {version = "0.2.5", features = ["cortex-m"]}
 
 mpu9250 = {version = "0.25.0", features =["i2c"]}
 
+# PID Controller
+pid = "4.0.0"
+
+
+
 #PowerMeterLib
 #pmlib-rs = {path = "../pmlib-rs", version = "*", features = ["fast"]}
 

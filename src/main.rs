@@ -11,9 +11,12 @@ mod app {
     use core::panic::PanicInfo;
     use core::sync::atomic::{AtomicUsize, Ordering};
     use core::usize;
+    
+    
     use rtic::export::CriticalSection;
 
     use stm32f4xx_hal::gpio::Analog;
+    use stm32f4xx_hal::timer::PwmChannel;
     use stm32f4xx_hal::{
         gpio::*,
         i2c::{self, I2c, Mode as i2cMode},
@@ -31,10 +34,11 @@ mod app {
 
     use mpu9250::{Mpu9250, ImuMeasurements, Imu, I2cDevice, Dlpf, MpuConfig, AccelDataRate, GyroTempDataRate};
 
+    use pid::Pid;
+
     //use shared_bus;
 
     static COUNTER_INT: AtomicUsize = AtomicUsize::new(0);
-
 
     #[shared]
     struct Shared {
@@ -54,6 +58,16 @@ mod app {
         //adc: Adc<pac::ADC1>,
         //pin_a6: Pin<'A', 6, Analog>, //Voltage Sense
         //pin_a7: Pin<'A', 7, Analog>, //Current Sense
+
+        //PWM
+        t1ch0: PwmChannel<pac::TIM1, 0>,
+        t1ch1: PwmChannel<pac::TIM1, 1>,
+        t1ch2: PwmChannel<pac::TIM1, 2>,
+        t1ch3: PwmChannel<pac::TIM1, 3>,
+
+        pid1: Pid<f32>,
+        pid2: Pid<f32>,
+
     }
 
     #[monotonic(binds = SysTick, default = true)]
@@ -99,6 +113,8 @@ mod app {
         .unwrap();
         writeln!(s2, "Init...").ok();
 
+        
+
         //I2C
 
         let pin_b6 = gpiob.pb6; //SCL
@@ -113,23 +129,42 @@ mod app {
         );
         writeln!(s2, "i2c ok").ok();
 
+        
+
 
 
         //TIMER1
         //advanced motor Timer
 
-        let atimpins = (Channel1::new(gpioa.pa8),
-                                                      Channel2::new(gpioa.pa9),
-                                                      Channel3::new(gpioa.pa10),
-                                                      Channel4::new(gpioa.pa11));
+        let atimpins = (
+            Channel1::new(gpioa.pa8),
+            Channel2::new(gpioa.pa9),
+            Channel3::new(gpioa.pa10),
+            Channel4::new(gpioa.pa11)
+        );
 
         let mut atim1 = ctx.device.TIM1.pwm_hz(atimpins, 1000.Hz(), &clocks);
 
         
         
-        let (mut t1ch1, mut t1ch2, mut t1ch3, mut t1ch4) = atim1.split();
+        let (mut t1ch0, mut t1ch1, mut t1ch2, mut t1ch3) = atim1.split();
 
-        
+        t1ch0.enable();
+        t1ch1.enable();
+        t1ch2.enable();
+        t1ch3.enable();
+
+
+        //TestPIDController
+        let mut pid1: Pid<f32> = Pid::new(0.0, 5.0);
+        pid1.p(0.9, 20.0);
+        pid1.i(0.6, 10.0);
+        pid1.d(0.1, 5.0);
+
+        let mut pid2: Pid<f32> = Pid::new(0.0, 5.0);
+        pid2.p(0.9, 20.0);
+        pid2.i(0.6, 10.0);
+        pid2.d(0.1, 5.0);
         
 
         //TIMER3
@@ -192,8 +227,6 @@ mod app {
         for n in 0..10 as usize{
             del.delay_us(1000000u32);
             valuesatrest[n] = imu.all().unwrap();
-
-            
         }
 
         //writeln!(s2, "{:#?}", valuesatrest).ok();
@@ -213,6 +246,8 @@ mod app {
 
         imu.set_accel_bias(true, means.accel).unwrap();
         imu.set_gyro_bias(true, means.gyro).unwrap();
+
+        
         
 
         //imu.calibrate_at_rest::<stm32f4xx_hal::timer::Delay<stm32f4xx_hal::pac::TIM4, 1000000>, [f32; 3]>(&mut del).unwrap();
@@ -243,7 +278,7 @@ mod app {
 
         let mono = Systick::new(ctx.core.SYST, 100_000_000);
         
-        (Shared {s2}, Local {led, tim3, pin_a0, pin_b5, imu}, init::Monotonics(mono))
+        (Shared {s2}, Local {led, tim3, pin_a0, pin_b5, imu, t1ch0, t1ch1, t1ch2, t1ch3, pid1, pid2}, init::Monotonics(mono))
     }
 
     // Background task, runs whenever no other tasks are running
@@ -260,7 +295,7 @@ mod app {
         ctx.local.tim3.clear_interrupt(Event::Update);
         ctx.local.led.toggle();
 
-        let val = COUNTER_INT.swap(0, Ordering::SeqCst);
+        let val: usize = COUNTER_INT.swap(0, Ordering::SeqCst);
 
         ctx.shared.s2.lock(|s2|{
             writeln!(s2, "last second: {}", val).ok();
@@ -280,6 +315,7 @@ mod app {
 
     #[task(binds = EXTI9_5, local = [pin_b5, imu], shared = [s2])]
     fn on_mpu(mut ctx: on_mpu::Context){
+        ctx.local.pin_b5.clear_interrupt_pending_bit();
         
         COUNTER_INT.fetch_add(1, Ordering::SeqCst);
 
@@ -288,12 +324,35 @@ mod app {
         
         ctx.shared.s2.lock(|s2|{
             //writeln!(s2, "{:#?}", all).ok();
-            writeln!(s2, "/*{:.4},{:.4},{:.4},{:.4},{:.4},{:.4}*/", all.gyro[0], all.gyro[1], all.gyro[2], all.accel[0], all.accel[1], all.accel[2]).ok();
+            //writeln!(s2, "/*{:.4},{:.4},{:.4},{:.4},{:.4},{:.4}*/", &all.gyro[0], &all.gyro[1], &all.gyro[2], &all.accel[0], &all.accel[1], &all.accel[2]).ok();
+            //writeln!(s2, "{} {} {}", ((&all.accel[0] * 100.0) as i16).abs(), ((&all.accel[1] * 100.0) as i16).abs(), ((&all.accel[2] * 100.0) as i16).abs()).ok();
         });
         
-
-        ctx.local.pin_b5.clear_interrupt_pending_bit();
+        
+        level::spawn(all.accel[0], all.accel[1], all.accel[2]).ok();
+        
     }
+
+    #[task(local = [t1ch0, t1ch1, t1ch2, t1ch3, pid1, pid2], shared = [s2])]
+    fn level(mut ctx: level::Context, a0: f32, a1: f32, a2: f32 ){
+        //ctx.local.t1ch0.set_duty(((a0 * 100.0) as i16).abs() as u16 * 8);
+        //ctx.local.t1ch1.set_duty(((a1 * 100.0) as i16).abs() as u16 * 8);
+
+        let p1 = ctx.local.pid1.next_control_output(a0);
+        let p2 = ctx.local.pid2.next_control_output(a1);
+
+        
+        ctx.shared.s2.lock(|s2|{
+            //writeln!(s2, "p1: {:?}", p1).ok();
+            writeln!(s2, "/*{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4}*/", a0, a1, a2, p1.p, p1.i, p1.d, p1.output, p2.p, p2.i, p2.d, p2.output).ok();
+        });
+
+        //ctx.local.t1ch0.set_duty((p1.output as u16) * 1000);
+        //ctx.local.t1ch1.set_duty((p2.output as u16) * 1000);
+
+
+    }
+
 
 
     #[panic_handler]
