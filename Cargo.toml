@@ -23,6 +23,7 @@ pid = "*"
 
 
 
+
 #PowerMeterLib
 #pmlib-rs = {path = "../pmlib-rs", version = "*", features = ["fast"]}
 
@@ -35,6 +36,7 @@ pid = "*"
 #features = ["cortex-m"]
 
 
+cortex-m = "*"
 
 [dependencies.stm32f4xx-hal]
 version = "*"

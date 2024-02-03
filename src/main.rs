@@ -12,6 +12,7 @@ mod app {
     use core::sync::atomic::{AtomicUsize, Ordering};
     use core::usize;
     
+    use cortex_m;
     
     use rtic::export::CriticalSection;
 
@@ -27,7 +28,7 @@ mod app {
         rtc::{self, Rtc},
         serial::{Config, Serial},
         spi::{self, Mode as spiMode, Spi},
-        timer::{CounterHz, Delay, Event, Timer, Pwm, Channel, Channel1, Channel2, Channel3, Channel4},
+        timer::{CounterHz, Delay, Event as TimerEvent, Timer, Pwm, Channel, Channel1, Channel2, Channel3, Channel4, Flag},
         adc::{config::AdcConfig, config::SampleTime, Adc, config::*},
     };
     use systick_monotonic::*;
@@ -54,14 +55,9 @@ mod app {
         //pin_a6: Pin<'A', 6, Analog>, //Voltage Sense
         //pin_a7: Pin<'A', 7, Analog>, //Current Sense
 
-        //PWM
-        t1ch0: PwmChannel<pac::TIM1, 0>,
-        t1ch1: PwmChannel<pac::TIM1, 1>,
-        t1ch2: PwmChannel<pac::TIM1, 2>,
-        t1ch3: PwmChannel<pac::TIM1, 3>,
+
 
         pid1: Pid<f32>,
-        pid2: Pid<f32>,
 
     }
 
@@ -110,62 +106,45 @@ mod app {
 
         
 
-        //I2C
+        //I2C1
 
-        let pin_b6 = gpiob.pb6; //SCL
-        let pin_b7 = gpiob.pb7; //SDA
+        let pin_b6 = gpiob.pb6; //SCL1
+        let pin_b7 = gpiob.pb7; //SDA1
 
-        let i2c = ctx.device.I2C1.i2c(
+        let i2c1 = ctx.device.I2C1.i2c(
             (pin_b6, pin_b7),
             i2cMode::Standard {
                 frequency: 400.kHz(),
             },
             &clocks,
         );
-        writeln!(s2, "i2c ok").ok();
+        writeln!(s2, "i2c1 ok").ok();
 
-        
+        //I2C3
 
+        let pin_a8 = gpioa.pa8; //SCL3
+        let pin_b4 = gpiob.pb4.into_push_pull_output(); //SDA3
 
-
-        //TIMER1
-        //advanced motor Timer
-
-        let atimpins = (
-            Channel1::new(gpioa.pa8),
-            Channel2::new(gpioa.pa9),
-            Channel3::new(gpioa.pa10),
-            Channel4::new(gpioa.pa11)
+        let i2c3 = ctx.device.I2C3.i2c(
+            (pin_a8, pin_b4),
+            i2cMode::Standard {
+                frequency: 400.kHz(),
+            },
+            &clocks,
         );
-
-        let mut atim1 = ctx.device.TIM1.pwm_hz(atimpins, 1000.Hz(), &clocks);
+        writeln!(s2, "i2c3 ok").ok();
 
         
-        
-        let (mut t1ch0, mut t1ch1, mut t1ch2, mut t1ch3) = atim1.split();
-
-        t1ch0.enable();
-        t1ch1.enable();
-        t1ch2.enable();
-        t1ch3.enable();
-
-
         //TestPIDController
-        let mut pid1: Pid<f32> = Pid::new(0.0, 5.0);
-        pid1.p(0.9, 20.0);
-        pid1.i(0.6, 10.0);
-        pid1.d(0.1, 5.0);
-
-        let mut pid2: Pid<f32> = Pid::new(0.0, 5.0);
-        pid2.p(0.9, 20.0);
-        pid2.i(0.6, 10.0);
-        pid2.d(0.1, 5.0);
-        
+        let mut pid1: Pid<f32> = Pid::new(55.0, 50.0);   //maybe -50.0 - 50.0 -> +50 und /10 to get to 0 - 10 V?
+        pid1.p(0.09, 5.0);
+        pid1.i(0.04, 5.0);
+        pid1.d(0.01, 3.0);
 
         //TIMER3
         // 16 bit Timer 3
         let mut tim3 = ctx.device.TIM3.counter_hz(&clocks);
-        tim3.listen(Event::Update);
+        tim3.listen(TimerEvent::Update);
         
 
         //TIMER4
@@ -174,17 +153,16 @@ mod app {
         //tim4.listen(Event::Update);
 
         let mut del = ctx.device.TIM4.delay_us(&clocks);
-
         writeln!(s2, "timer ok").ok();
 
         //ADC
-        //let pin_a6 = gpioa.pa6.into_analog(); //Voltage Sense
-        //let pin_a7 = gpioa.pa7.into_analog(); //Current Sense
+        let pin_b0 = gpiob.pb0.into_analog(); //Potentiometer Sense
+        let pin_b1 = gpiob.pb1.into_analog(); //return from Valve Sense
 
-        //let mut adc = Adc::adc1(ctx.device.ADC1, true, AdcConfig::default());
+        let mut adc = Adc::adc1(ctx.device.ADC1, true, AdcConfig::default());
+        let sample = adc.convert(&pin_b0, SampleTime::Cycles_144);
+        let sample = adc.convert(&pin_b1, SampleTime::Cycles_28); 
         
-        
-
         //let sample = adc.convert(&pin_a7, SampleTime::Cycles_480);
         
         //writeln!(s2, "ADC output: {}", sample).ok();
@@ -199,8 +177,7 @@ mod app {
 
         
 
-
-        tim3.start(1.Hz()).ok();
+        tim3.start(10.Hz()).ok();
 
 
         //Button Interrupt
@@ -212,7 +189,7 @@ mod app {
 
         let mono = Systick::new(ctx.core.SYST, 100_000_000);
         
-        (Shared {s2}, Local {led, tim3, pin_a0, t1ch0, t1ch1, t1ch2, t1ch3, pid1, pid2}, init::Monotonics(mono))
+        (Shared {s2}, Local {led, tim3, pin_a0, pid1}, init::Monotonics(mono))
     }
 
     // Background task, runs whenever no other tasks are running
@@ -224,10 +201,14 @@ mod app {
     }
 
     //Timer3 Interrupt
-    #[task(binds = TIM3, local = [tim3, led], shared = [s2], priority = 6)]
+    #[task(binds = TIM3, local = [tim3, led, pid1], shared = [s2], priority = 6)]
     fn on_tim3(mut ctx: on_tim3::Context) {
-        ctx.local.tim3.clear_interrupt(Event::Update);
+        ctx.local.tim3.clear_flags(Flag::Update);
+
+        
         ctx.local.led.toggle();
+
+        //ctx.local.pid1.next_control_output();
 
         let val: usize = COUNTER_INT.swap(0, Ordering::SeqCst);
 
@@ -270,10 +251,10 @@ mod app {
     }
     */
 
-
-
     #[panic_handler]
     fn panic(_info: &PanicInfo) -> ! {
+        
+        
         loop {}
     }
 
