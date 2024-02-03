@@ -5,11 +5,13 @@
 
 use rtic::app;
 
+mod gp8403;
+
 #[app(device = stm32f4xx_hal::pac, peripherals = true, dispatchers = [SPI4, SPI5])]
 mod app {
     use core::fmt::{Write, write};
     use core::panic::PanicInfo;
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
     use core::usize;
     
     use cortex_m;
@@ -35,9 +37,14 @@ mod app {
 
     use pid::Pid;
 
+    use crate::gp8403::{GP8403Driver, Addr, OutputRange, Channel as gpchannel};
+
+    //gp8403;
+    
+
     //use shared_bus;
 
-    static COUNTER_INT: AtomicUsize = AtomicUsize::new(0);
+    static COUNTER_INT: AtomicU16 = AtomicU16::new(0);
 
     #[shared]
     struct Shared {
@@ -55,7 +62,7 @@ mod app {
         //pin_a6: Pin<'A', 6, Analog>, //Voltage Sense
         //pin_a7: Pin<'A', 7, Analog>, //Current Sense
 
-
+        gp: GP8403Driver<I2c<pac::I2C3>>,
 
         pid1: Pid<f32>,
 
@@ -128,11 +135,16 @@ mod app {
         let i2c3 = ctx.device.I2C3.i2c(
             (pin_a8, pin_b4),
             i2cMode::Standard {
-                frequency: 400.kHz(),
+                frequency: 40.kHz(),
             },
             &clocks,
         );
         writeln!(s2, "i2c3 ok").ok();
+
+        let mut gp = GP8403Driver::new(i2c3, Addr::A58);
+
+        gp.setOutputRange(OutputRange::V10).ok();
+        gp.setOutput(gpchannel::Channel0, 0xFFF).ok();
 
         
         //TestPIDController
@@ -160,8 +172,8 @@ mod app {
         let pin_b1 = gpiob.pb1.into_analog(); //return from Valve Sense
 
         let mut adc = Adc::adc1(ctx.device.ADC1, true, AdcConfig::default());
-        let sample = adc.convert(&pin_b0, SampleTime::Cycles_144);
-        let sample = adc.convert(&pin_b1, SampleTime::Cycles_28); 
+        //let sample = adc.convert(&pin_b0, SampleTime::Cycles_144);
+        //let sample = adc.convert(&pin_b1, SampleTime::Cycles_28); 
         
         //let sample = adc.convert(&pin_a7, SampleTime::Cycles_480);
         
@@ -177,7 +189,7 @@ mod app {
 
         
 
-        tim3.start(10.Hz()).ok();
+        tim3.start(1.Hz()).ok();
 
 
         //Button Interrupt
@@ -189,7 +201,7 @@ mod app {
 
         let mono = Systick::new(ctx.core.SYST, 100_000_000);
         
-        (Shared {s2}, Local {led, tim3, pin_a0, pid1}, init::Monotonics(mono))
+        (Shared {s2}, Local {led, tim3, pin_a0, pid1, gp}, init::Monotonics(mono))
     }
 
     // Background task, runs whenever no other tasks are running
@@ -201,7 +213,7 @@ mod app {
     }
 
     //Timer3 Interrupt
-    #[task(binds = TIM3, local = [tim3, led, pid1], shared = [s2], priority = 6)]
+    #[task(binds = TIM3, local = [tim3, led, pid1, gp], shared = [s2], priority = 6)]
     fn on_tim3(mut ctx: on_tim3::Context) {
         ctx.local.tim3.clear_flags(Flag::Update);
 
@@ -210,10 +222,15 @@ mod app {
 
         //ctx.local.pid1.next_control_output();
 
-        let val: usize = COUNTER_INT.swap(0, Ordering::SeqCst);
+        let val = COUNTER_INT.fetch_add(100, Ordering::SeqCst);
+
+        //let val: usize = COUNTER_INT.swap(0, Ordering::SeqCst);
+
+        //ctx.local.gp.setOutput(gpchannel::Channel0, val);
+
 
         ctx.shared.s2.lock(|s2|{
-            writeln!(s2, "last second: {}", val).ok();
+            //writeln!(s2, "last second: {}", val).ok();
         });
 
     }

@@ -21,7 +21,7 @@ shared-bus = {version = "*", features = ["cortex-m"]}
 # PID Controller
 pid = "*"
 
-
+embedded-hal = "1.0.0"
 
 
 #PowerMeterLib
@@ -39,8 +39,8 @@ pid = "*"
 cortex-m = "*"
 
 [dependencies.stm32f4xx-hal]
-version = "*"
-features = ["stm32f411", "rt", "rtic-monotonic"]
+version = "0.20.0"
+features = ["stm32f411", "rtic1"]
 
 [dependencies.stm32f4]
 version = "*"
