@@ -40,6 +40,8 @@ mod app {
     use crate::gp8403::{GP8403Driver, Addr, OutputRange, Channel as gpchannel};
 
     //gp8403;
+
+    use hd44780_driver::{Cursor, CursorBlink, Display, DisplayMode, HD44780};
     
 
     //use shared_bus;
@@ -62,7 +64,7 @@ mod app {
         //pin_a6: Pin<'A', 6, Analog>, //Voltage Sense
         //pin_a7: Pin<'A', 7, Analog>, //Current Sense
 
-        gp: GP8403Driver<I2c<pac::I2C3>>,
+        //gp: GP8403Driver<I2c<pac::I2C3>>,
 
         pid1: Pid<f32>,
 
@@ -111,6 +113,20 @@ mod app {
         .unwrap();
         writeln!(s2, "Init...").ok();
 
+        //TIMER3
+        // 16 bit Timer 3
+        let mut tim3 = ctx.device.TIM3.counter_hz(&clocks);
+        tim3.listen(TimerEvent::Update);
+        
+
+        //TIMER4
+        // 16 bit Timer 4
+        //let mut tim4 = ctx.device.TIM4.counter_hz(&clocks);
+        //tim4.listen(Event::Update);
+
+        let mut del = ctx.device.TIM4.delay_us(&clocks);
+        writeln!(s2, "timer ok").ok();
+
         
 
         //I2C1
@@ -141,11 +157,34 @@ mod app {
         );
         writeln!(s2, "i2c3 ok").ok();
 
-        let mut gp = GP8403Driver::new(i2c3, Addr::A58);
+        //let mut gp = GP8403Driver::new(i2c3, Addr::A58);
 
-        gp.setOutputRange(OutputRange::V10).ok();
-        gp.setOutput(gpchannel::Channel0, 0xFFF).ok();
+        //gp.setOutputRange(OutputRange::V10).ok();
+        //gp.setOutput(gpchannel::Channel0, 0xFFF).ok();
 
+        /*
+        const I2C_ADDRESS: u8 = 0x27;
+        let mut lcd = HD44780::new_i2c(i2c3, I2C_ADDRESS, &mut del).unwrap();
+
+        lcd.reset(&mut del);
+        lcd.clear(&mut del);
+
+        
+        
+        lcd.set_display_mode(
+            DisplayMode {
+                display: Display::On,
+                cursor_visibility: Cursor::Visible,
+                cursor_blink: CursorBlink::On,
+            },
+            &mut del
+        );
+        let _ = lcd.write_str("Hello, world!", &mut del);
+        lcd.set_cursor_xy((0,1), &mut del);
+        let _ = lcd.write_str("test123!", &mut del);
+        */
+
+        
         
         //TestPIDController
         let mut pid1: Pid<f32> = Pid::new(55.0, 50.0);   //maybe -50.0 - 50.0 -> +50 und /10 to get to 0 - 10 V?
@@ -153,19 +192,7 @@ mod app {
         pid1.i(0.04, 5.0);
         pid1.d(0.01, 3.0);
 
-        //TIMER3
-        // 16 bit Timer 3
-        let mut tim3 = ctx.device.TIM3.counter_hz(&clocks);
-        tim3.listen(TimerEvent::Update);
-        
 
-        //TIMER4
-        // 16 bit Timer 4
-        //let mut tim4 = ctx.device.TIM4.counter_hz(&clocks);
-        //tim4.listen(Event::Update);
-
-        let mut del = ctx.device.TIM4.delay_us(&clocks);
-        writeln!(s2, "timer ok").ok();
 
         //ADC
         let pin_b0 = gpiob.pb0.into_analog(); //Potentiometer Sense
@@ -201,7 +228,7 @@ mod app {
 
         let mono = Systick::new(ctx.core.SYST, 100_000_000);
         
-        (Shared {s2}, Local {led, tim3, pin_a0, pid1, gp}, init::Monotonics(mono))
+        (Shared {s2}, Local {led, tim3, pin_a0, pid1}, init::Monotonics(mono))
     }
 
     // Background task, runs whenever no other tasks are running
@@ -213,7 +240,7 @@ mod app {
     }
 
     //Timer3 Interrupt
-    #[task(binds = TIM3, local = [tim3, led, pid1, gp], shared = [s2], priority = 6)]
+    #[task(binds = TIM3, local = [tim3, led, pid1], shared = [s2], priority = 6)]
     fn on_tim3(mut ctx: on_tim3::Context) {
         ctx.local.tim3.clear_flags(Flag::Update);
 

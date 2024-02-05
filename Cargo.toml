@@ -36,6 +36,8 @@ embedded-hal = "1.0.0"
 #features = ["cortex-m"]
 
 
+hd44780-driver = { path = "../hd44780-driver", version = "*"}
+
 cortex-m = "*"
 
 [dependencies.stm32f4xx-hal]
