@@ -1,0 +1,35 @@
+[LED]
+c13 = "pin"
+
+[BUTTON]
+a0 = "pin"
+
+[VALVE]
+[VALVE.i2c1]
+b6 = "SCL"
+b7 = "SDA"
+
+[VALVE.10Vreturnsense]
+a4 = "pin"
+
+[DISPLAY]
+[DISPLAY.i2c3]
+a8 = "SCL"
+b4 = "SDA"
+
+[DISPLAY.backlight]
+a5 = "pin"
+
+[USART1]
+a9 = "TX"
+a10 = "RX"
+
+[USART2]
+a2 = "TX"
+a3 = "RX"
+
+[POTENTIOMETER]
+b0 = "pin"
+
+[ONEWIRE]
+c15 = "pin"

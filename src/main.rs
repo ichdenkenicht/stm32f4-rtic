@@ -14,6 +14,7 @@ mod app {
     use core::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
     use core::usize;
     
+
     use cortex_m;
     
     use rtic::export::CriticalSection;
@@ -30,10 +31,12 @@ mod app {
         rtc::{self, Rtc},
         serial::{Config, Serial},
         spi::{self, Mode as spiMode, Spi},
-        timer::{CounterHz, Delay, Event as TimerEvent, Timer, Pwm, Channel, Channel1, Channel2, Channel3, Channel4, Flag},
+        timer::{CounterHz, Delay, Event as TimerEvent, Timer, Pwm, Channel, Channel1, Channel2, Channel3, Channel4, Flag, Counter},
         adc::{config::AdcConfig, config::SampleTime, Adc, config::*},
     };
     use systick_monotonic::*;
+
+    use heapless::String;
 
     use pid::Pid;
 
@@ -58,15 +61,22 @@ mod app {
         led: Pin<'C', 13, Output<PushPull>>,
         pin_a0: Pin<'A', 0, Input>, //Button
 
+        pin_a5: Pin<'A', 5, Output<PushPull>>, //Display Backlight
+
+        // pin_a4: Pin<'A', 4, Input>, //10V return from valve
+
         tim3: CounterHz<pac::TIM3>,
 
-        //adc: Adc<pac::ADC1>,
-        //pin_a6: Pin<'A', 6, Analog>, //Voltage Sense
-        //pin_a7: Pin<'A', 7, Analog>, //Current Sense
+        adc: Adc<pac::ADC1>,
+        pin_b0: Pin<'B', 0, Analog>, //Pot
+        //pin_a4: Pin<'A', 4, Analog>, //Valve
 
         //gp: GP8403Driver<I2c<pac::I2C3>>,
 
         pid1: Pid<f32>,
+
+        lcd: HD44780<hd44780_driver::bus::I2CBus<I2c<pac::I2C3>>>,
+        del: Delay<pac::TIM4, 1000000>,
 
     }
 
@@ -92,7 +102,28 @@ mod app {
         let gpiob = ctx.device.GPIOB.split();
         let gpioc = ctx.device.GPIOC.split();
 
-        let led = gpioc.pc13.into_push_pull_output();
+        let mut led = gpioc.pc13.into_push_pull_output();
+        led.set_high();
+
+        //UART1
+        //PA10 -> RX1
+        //PA9 -> TX1
+        /*
+        let pin_a9 = gpioa.pa9.into_alternate();
+        let pin_a10 = gpioa.pa10.into_alternate();
+
+        let mut s1 = Serial::new(
+            ctx.device.USART1,
+            (pin_a9, pin_a10),
+            Config::default()
+                .baudrate(115200.bps())
+                .wordlength_8()
+                .parity_none(),
+            &clocks,
+        )
+        .unwrap();
+        writeln!(s1, "Init... s1").ok();
+        */
 
         //UART2
         //PA3 -> RX2
@@ -111,13 +142,19 @@ mod app {
             &clocks,
         )
         .unwrap();
-        writeln!(s2, "Init...").ok();
+        writeln!(s2, "Init... s2").ok();
+        
 
         //TIMER3
         // 16 bit Timer 3
         let mut tim3 = ctx.device.TIM3.counter_hz(&clocks);
-        tim3.listen(TimerEvent::Update);
+        tim3.listen_only(TimerEvent::Update);
+        writeln!(s2, "tim3 ok").ok();
         
+        // Timer9
+        // 16bit only up
+        //let mut tim9 = ctx.device.TIM9.counter_ms(&clocks);
+        //tim9.start(10u32.secs()).unwrap();
 
         //TIMER4
         // 16 bit Timer 4
@@ -125,11 +162,11 @@ mod app {
         //tim4.listen(Event::Update);
 
         let mut del = ctx.device.TIM4.delay_us(&clocks);
-        writeln!(s2, "timer ok").ok();
+        writeln!(s2, "delay ok").ok();
 
         
 
-        //I2C1
+        //I2C1 gp8403
 
         let pin_b6 = gpiob.pb6; //SCL1
         let pin_b7 = gpiob.pb7; //SDA1
@@ -137,13 +174,13 @@ mod app {
         let i2c1 = ctx.device.I2C1.i2c(
             (pin_b6, pin_b7),
             i2cMode::Standard {
-                frequency: 400.kHz(),
+                frequency: 40.kHz(),
             },
             &clocks,
         );
         writeln!(s2, "i2c1 ok").ok();
 
-        //I2C3
+        //I2C3  display
 
         let pin_a8 = gpioa.pa8; //SCL3
         let pin_b4 = gpiob.pb4.into_push_pull_output(); //SDA3
@@ -151,26 +188,29 @@ mod app {
         let i2c3 = ctx.device.I2C3.i2c(
             (pin_a8, pin_b4),
             i2cMode::Standard {
-                frequency: 40.kHz(),
+                frequency: 100.kHz(),
             },
             &clocks,
         );
         writeln!(s2, "i2c3 ok").ok();
 
-        //let mut gp = GP8403Driver::new(i2c3, Addr::A58);
+        //let mut gp = GP8403Driver::new(i2c1, Addr::A58);
 
         //gp.setOutputRange(OutputRange::V10).ok();
         //gp.setOutput(gpchannel::Channel0, 0xFFF).ok();
 
-        /*
+        
+        //Display
+        
+        let mut pin_a5 = gpioa.pa5.into_push_pull_output();
+        pin_a5.set_high();
+
         const I2C_ADDRESS: u8 = 0x27;
         let mut lcd = HD44780::new_i2c(i2c3, I2C_ADDRESS, &mut del).unwrap();
 
         lcd.reset(&mut del);
         lcd.clear(&mut del);
 
-        
-        
         lcd.set_display_mode(
             DisplayMode {
                 display: Display::On,
@@ -179,14 +219,14 @@ mod app {
             },
             &mut del
         );
-        let _ = lcd.write_str("Hello, world!", &mut del);
-        lcd.set_cursor_xy((0,1), &mut del);
-        let _ = lcd.write_str("test123!", &mut del);
-        */
+        //let _ = lcd.write_str("Hello, world!", &mut del);
+        //lcd.set_cursor_xy((0,1), &mut del);
+        //let _ = lcd.write_str("test123!", &mut del);
+        
 
         
         
-        //TestPIDController
+        //PIDController
         let mut pid1: Pid<f32> = Pid::new(55.0, 50.0);   //maybe -50.0 - 50.0 -> +50 und /10 to get to 0 - 10 V?
         pid1.p(0.09, 5.0);
         pid1.i(0.04, 5.0);
@@ -196,15 +236,10 @@ mod app {
 
         //ADC
         let pin_b0 = gpiob.pb0.into_analog(); //Potentiometer Sense
-        let pin_b1 = gpiob.pb1.into_analog(); //return from Valve Sense
+        //let pin_a4 = gpioa.pa4.into_analog(); //return from Valve Sense
 
         let mut adc = Adc::adc1(ctx.device.ADC1, true, AdcConfig::default());
-        //let sample = adc.convert(&pin_b0, SampleTime::Cycles_144);
-        //let sample = adc.convert(&pin_b1, SampleTime::Cycles_28); 
-        
-        //let sample = adc.convert(&pin_a7, SampleTime::Cycles_480);
-        
-        //writeln!(s2, "ADC output: {}", sample).ok();
+        writeln!(s2, "ADC ok").ok();
 
 
         //Internal RTC
@@ -214,10 +249,12 @@ mod app {
         //let time = irtc.get_datetime();
         //writeln!(s2, "{:#?}", time).unwrap();
 
-        
 
+
+        //tim3.start(1_000u32.millis()).ok();
+        //tim3.start(1u32.secs()).ok();
         tim3.start(1.Hz()).ok();
-
+        
 
         //Button Interrupt
         let mut pin_a0 = gpioa.pa0.into_pull_up_input();
@@ -228,7 +265,7 @@ mod app {
 
         let mono = Systick::new(ctx.core.SYST, 100_000_000);
         
-        (Shared {s2}, Local {led, tim3, pin_a0, pid1}, init::Monotonics(mono))
+        (Shared {s2}, Local {led, tim3, pin_a0, pid1, pin_a5, adc, pin_b0, lcd, del}, init::Monotonics(mono))
     }
 
     // Background task, runs whenever no other tasks are running
@@ -240,25 +277,60 @@ mod app {
     }
 
     //Timer3 Interrupt
-    #[task(binds = TIM3, local = [tim3, led, pid1], shared = [s2], priority = 6)]
+    #[task(binds = TIM3, local = [tim3, led, pid1, adc, pin_b0, lcd, del], shared = [s2], priority = 6)]
     fn on_tim3(mut ctx: on_tim3::Context) {
         ctx.local.tim3.clear_flags(Flag::Update);
-
         
+
         ctx.local.led.toggle();
+
+        //ctx.local.pin_a5.toggle();
+
+        let pot = ctx.local.adc.convert(ctx.local.pin_b0, SampleTime::Cycles_56);
+        //let valve = ctx.local.adc.convert(ctx.local.pin_a4, SampleTime::Cycles_56);
+
+        ctx.local.lcd.clear(ctx.local.del);
+        
+        let mut line0 = String::<14>::new();
+        let mut line1 = String::<14>::new();
+
+        //write!(line0, "{}", pot);
+
+        //ctx.local.lcd.write_str(&line0 ,ctx.local.del);
+        
+        match pot {
+            ..=0xC8 => {    //Unter 100 sperr ventil
+                //ctx.local.gp.setOutput(gpchannel::Channel0, val); // 0 oder 10V
+
+            },
+            0xC9..=0xF3C => { //map to 45 - 75 Grad C
+                let nextsetpoint = (((pot as f32) - 201.0) * (75.0 - 45.0) / (3900.0 - 201.0)) + 45.0;
+                //ctx.local.pid1.setpoint(nextsetpoint);
+                //ctx.local.pid1.next_control_output();
+                //ctx.local.gp.setOutput(gpchannel::Channel0, val);
+
+                write!(line0, "S: {:.1} I:", nextsetpoint);
+
+                ctx.local.lcd.write_str(&line0 ,ctx.local.del);
+            },
+            0xF3D..=u16::MAX => { //oeffne vollstaendig
+                //ctx.local.gp.setOutput(gpchannel::Channel0, val); //10 oder 0V >D
+
+            }
+        }
+        
 
         //ctx.local.pid1.next_control_output();
 
-        let val = COUNTER_INT.fetch_add(100, Ordering::SeqCst);
-
+        //let val = COUNTER_INT.fetch_add(100, Ordering::SeqCst);
         //let val: usize = COUNTER_INT.swap(0, Ordering::SeqCst);
 
         //ctx.local.gp.setOutput(gpchannel::Channel0, val);
 
 
-        ctx.shared.s2.lock(|s2|{
+        //ctx.shared.s2.lock(|s2|{
             //writeln!(s2, "last second: {}", val).ok();
-        });
+        //});
 
     }
 
@@ -297,8 +369,6 @@ mod app {
 
     #[panic_handler]
     fn panic(_info: &PanicInfo) -> ! {
-        
-        
         loop {}
     }
 

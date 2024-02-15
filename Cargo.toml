@@ -39,6 +39,7 @@ embedded-hal = "1.0.0"
 hd44780-driver = { path = "../hd44780-driver", version = "*"}
 
 cortex-m = "*"
+heapless = "0.8.0"
 
 [dependencies.stm32f4xx-hal]
 version = "0.20.0"
