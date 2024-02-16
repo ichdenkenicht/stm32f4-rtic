@@ -31,5 +31,5 @@ a3 = "RX"
 [POTENTIOMETER]
 b0 = "pin"
 
-[ONEWIRE]
-c15 = "pin"
+[PT1000]
+a7 = "pin"

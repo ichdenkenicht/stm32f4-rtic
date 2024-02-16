@@ -45,6 +45,8 @@ mod app {
     //gp8403;
 
     use hd44780_driver::{Cursor, CursorBlink, Display, DisplayMode, HD44780};
+
+    
     
 
     //use shared_bus;
@@ -70,6 +72,7 @@ mod app {
         adc: Adc<pac::ADC1>,
         pin_b0: Pin<'B', 0, Analog>, //Pot
         //pin_a4: Pin<'A', 4, Analog>, //Valve
+        pin_a7: Pin<'A', 7, Analog>, //PT1000
 
         //gp: GP8403Driver<I2c<pac::I2C3>>,
 
@@ -162,6 +165,9 @@ mod app {
         //tim4.listen(Event::Update);
 
         let mut del = ctx.device.TIM4.delay_us(&clocks);
+        
+
+        let mut del2 = ctx.device.TIM9.delay_us(&clocks);
         writeln!(s2, "delay ok").ok();
 
         
@@ -194,12 +200,16 @@ mod app {
         );
         writeln!(s2, "i2c3 ok").ok();
 
-        //let mut gp = GP8403Driver::new(i2c1, Addr::A58);
+        let mut gp = GP8403Driver::new(i2c1, Addr::A58);
 
-        //gp.setOutputRange(OutputRange::V10).ok();
-        //gp.setOutput(gpchannel::Channel0, 0xFFF).ok();
+        gp.setOutputRange(OutputRange::V10).ok();
+        gp.setOutput(gpchannel::Channel0, 0xFFF).ok();
 
-        
+
+
+
+
+
         //Display
         
         let mut pin_a5 = gpioa.pa5.into_push_pull_output();
@@ -228,20 +238,21 @@ mod app {
         
         //PIDController
         let mut pid1: Pid<f32> = Pid::new(55.0, 50.0);   //maybe -50.0 - 50.0 -> +50 und /10 to get to 0 - 10 V?
-        pid1.p(0.09, 5.0);
-        pid1.i(0.04, 5.0);
-        pid1.d(0.01, 3.0);
+        pid1.p(0.20, 10.0);
+        pid1.i(0.08, 1.0);
+        pid1.d(0.03, 3.0);
 
 
 
         //ADC
         let pin_b0 = gpiob.pb0.into_analog(); //Potentiometer Sense
-        //let pin_a4 = gpioa.pa4.into_analog(); //return from Valve Sense
+        let pin_a4 = gpioa.pa4.into_analog(); //return from Valve Sense
+        let pin_a7 = gpioa.pa7.into_analog(); //PT1000
 
         let mut adc = Adc::adc1(ctx.device.ADC1, true, AdcConfig::default());
         writeln!(s2, "ADC ok").ok();
 
-
+        
         //Internal RTC
         //let mut irtc = Rtc::new(hal_p.RTC, &mut hal_p.PWR);
         //let d
@@ -249,7 +260,7 @@ mod app {
         //let time = irtc.get_datetime();
         //writeln!(s2, "{:#?}", time).unwrap();
 
-
+        
 
         //tim3.start(1_000u32.millis()).ok();
         //tim3.start(1u32.secs()).ok();
@@ -265,7 +276,7 @@ mod app {
 
         let mono = Systick::new(ctx.core.SYST, 100_000_000);
         
-        (Shared {s2}, Local {led, tim3, pin_a0, pid1, pin_a5, adc, pin_b0, lcd, del}, init::Monotonics(mono))
+        (Shared {s2}, Local {led, tim3, pin_a0, pid1, pin_a5, adc, pin_b0, lcd, del, pin_a7}, init::Monotonics(mono))
     }
 
     // Background task, runs whenever no other tasks are running
@@ -277,7 +288,7 @@ mod app {
     }
 
     //Timer3 Interrupt
-    #[task(binds = TIM3, local = [tim3, led, pid1, adc, pin_b0, lcd, del], shared = [s2], priority = 6)]
+    #[task(binds = TIM3, local = [tim3, led, pid1, adc, pin_b0, lcd, del, pin_a7], shared = [s2], priority = 6)]
     fn on_tim3(mut ctx: on_tim3::Context) {
         ctx.local.tim3.clear_flags(Flag::Update);
         
@@ -289,10 +300,24 @@ mod app {
         let pot = ctx.local.adc.convert(ctx.local.pin_b0, SampleTime::Cycles_56);
         //let valve = ctx.local.adc.convert(ctx.local.pin_a4, SampleTime::Cycles_56);
 
+        const oversampling: usize = 40;
+
+        let mut pt1000 = [0u16; oversampling];
+        for i in 0..oversampling{
+            pt1000[i] = ctx.local.adc.convert(ctx.local.pin_a7, SampleTime::Cycles_144);
+        }
+
+        let mut sum = 0u32;
+        for u in 0..oversampling {
+            sum += pt1000[u] as u32;
+        }
+        let pt1000f = sum as f32 / oversampling as f32;
+        
+
         ctx.local.lcd.clear(ctx.local.del);
         
-        let mut line0 = String::<14>::new();
-        let mut line1 = String::<14>::new();
+        let mut line0 = String::<16>::new();
+        let mut line1 = String::<16>::new();
 
         //write!(line0, "{}", pot);
 
@@ -305,13 +330,28 @@ mod app {
             },
             0xC9..=0xF3C => { //map to 45 - 75 Grad C
                 let nextsetpoint = (((pot as f32) - 201.0) * (75.0 - 45.0) / (3900.0 - 201.0)) + 45.0;
-                //ctx.local.pid1.setpoint(nextsetpoint);
-                //ctx.local.pid1.next_control_output();
+                let pt1000temp =  ((pt1000f * 0.3029) - 625.70);
+
+
+                
+                let nco = ctx.local.pid1.next_control_output(pt1000temp);
+                ctx.local.pid1.setpoint(nextsetpoint);
                 //ctx.local.gp.setOutput(gpchannel::Channel0, val);
 
-                write!(line0, "S: {:.1} I:", nextsetpoint);
+                
+                //write!(line1, "I: {:.1}", pt1000temp);
+                write!(line0, "S:{:.1} I:{:.1}", nextsetpoint, pt1000temp);
 
                 ctx.local.lcd.write_str(&line0 ,ctx.local.del);
+                //ctx.local.lcd.set_cursor_xy((0,1), ctx.local.del);
+                //ctx.local.lcd.write_str(&line1 ,ctx.local.del);
+
+                ctx.shared.s2.lock(|s2|{
+                    writeln!(s2, "raw: S: {} I: {:.4}", pot, pt1000f).ok();
+                    writeln!(s2, "S: {} I: {}", nextsetpoint, pt1000temp).ok();
+                    writeln!(s2, "{:#?}", nco).ok();
+                });
+
             },
             0xF3D..=u16::MAX => { //oeffne vollstaendig
                 //ctx.local.gp.setOutput(gpchannel::Channel0, val); //10 oder 0V >D
