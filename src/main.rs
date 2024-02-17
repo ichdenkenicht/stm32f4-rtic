@@ -369,7 +369,12 @@ mod app {
                 
                 let nco = ctx.local.pid1.next_control_output(pt1000temp);
                 ctx.local.pid1.setpoint(nextsetpoint);
-                //ctx.local.gp.setOutput(gpchannel::Channel0, val);
+
+
+                let out = ((nco.output*40.96)+2048.0).clamp(0.0, 4095.0) as u16;
+
+
+                ctx.local.gp.setOutput(gpchannel::Channel0, out);
 
                 
                 //write!(line1, "I: {:.1}", pt1000temp);
