@@ -52,6 +52,7 @@ mod app {
     //use shared_bus;
 
     static COUNTER_INT: AtomicU16 = AtomicU16::new(0);
+    static ERROR_CNT: AtomicUsize = AtomicUsize::new(0);
 
     #[shared]
     struct Shared {
@@ -74,7 +75,7 @@ mod app {
         //pin_a4: Pin<'A', 4, Analog>, //Valve
         pin_a7: Pin<'A', 7, Analog>, //PT1000
 
-        //gp: GP8403Driver<I2c<pac::I2C3>>,
+        gp: GP8403Driver<I2c<pac::I2C1>>,
 
         pid1: Pid<f32>,
 
@@ -167,7 +168,7 @@ mod app {
         let mut del = ctx.device.TIM4.delay_us(&clocks);
         
 
-        let mut del2 = ctx.device.TIM9.delay_us(&clocks);
+        let del2 = ctx.device.TIM9.delay_us(&clocks);
         writeln!(s2, "delay ok").ok();
 
         
@@ -202,8 +203,8 @@ mod app {
 
         let mut gp = GP8403Driver::new(i2c1, Addr::A58);
 
-        gp.setOutputRange(OutputRange::V10).ok();
-        gp.setOutput(gpchannel::Channel0, 0xFFF).ok();
+        gp.setOutputRange(OutputRange::V10).unwrap_or_else(|c|{writeln!(s2, "{:?}", c).ok(); loop{}});
+        gp.setOutput(gpchannel::Channel0, 0xFFF).unwrap_or_else(|c|{writeln!(s2, "{:?}", c).ok(); loop{}});
 
 
 
@@ -218,8 +219,9 @@ mod app {
         const I2C_ADDRESS: u8 = 0x27;
         let mut lcd = HD44780::new_i2c(i2c3, I2C_ADDRESS, &mut del).unwrap();
 
-        lcd.reset(&mut del);
-        lcd.clear(&mut del);
+        
+        lcd.reset(&mut del).unwrap_or_else(|c|{writeln!(s2, "{:?}", c).ok(); loop{}});
+        lcd.clear(&mut del).unwrap_or_else(|c|{writeln!(s2, "{:?}", c).ok(); loop{}});
 
         lcd.set_display_mode(
             DisplayMode {
@@ -228,7 +230,10 @@ mod app {
                 cursor_blink: CursorBlink::On,
             },
             &mut del
-        );
+        ).unwrap_or_else(|c|{writeln!(s2, "{:?}", c).ok(); loop{}});
+        
+
+
         //let _ = lcd.write_str("Hello, world!", &mut del);
         //lcd.set_cursor_xy((0,1), &mut del);
         //let _ = lcd.write_str("test123!", &mut del);
@@ -249,7 +254,7 @@ mod app {
         let pin_a4 = gpioa.pa4.into_analog(); //return from Valve Sense
         let pin_a7 = gpioa.pa7.into_analog(); //PT1000
 
-        let mut adc = Adc::adc1(ctx.device.ADC1, true, AdcConfig::default());
+        let adc = Adc::adc1(ctx.device.ADC1, true, AdcConfig::default());
         writeln!(s2, "ADC ok").ok();
 
         
@@ -276,7 +281,7 @@ mod app {
 
         let mono = Systick::new(ctx.core.SYST, 100_000_000);
         
-        (Shared {s2}, Local {led, tim3, pin_a0, pid1, pin_a5, adc, pin_b0, lcd, del, pin_a7}, init::Monotonics(mono))
+        (Shared {s2}, Local {led, tim3, pin_a0, pid1, pin_a5, adc, pin_b0, lcd, del, pin_a7, gp}, init::Monotonics(mono))
     }
 
     // Background task, runs whenever no other tasks are running
@@ -288,7 +293,7 @@ mod app {
     }
 
     //Timer3 Interrupt
-    #[task(binds = TIM3, local = [tim3, led, pid1, adc, pin_b0, lcd, del, pin_a7], shared = [s2], priority = 6)]
+    #[task(binds = TIM3, local = [tim3, led, pid1, adc, pin_b0, lcd, del, pin_a7, gp], shared = [s2], priority = 6)]
     fn on_tim3(mut ctx: on_tim3::Context) {
         ctx.local.tim3.clear_flags(Flag::Update);
         
@@ -300,21 +305,22 @@ mod app {
         let pot = ctx.local.adc.convert(ctx.local.pin_b0, SampleTime::Cycles_56);
         //let valve = ctx.local.adc.convert(ctx.local.pin_a4, SampleTime::Cycles_56);
 
-        const oversampling: usize = 40;
+        const OVERSAMPLING: usize = 40;
 
-        let mut pt1000 = [0u16; oversampling];
-        for i in 0..oversampling{
+        let mut pt1000 = [0u16; OVERSAMPLING];
+        for i in 0..OVERSAMPLING{
             pt1000[i] = ctx.local.adc.convert(ctx.local.pin_a7, SampleTime::Cycles_144);
         }
 
         let mut sum = 0u32;
-        for u in 0..oversampling {
+        for u in 0..OVERSAMPLING {
             sum += pt1000[u] as u32;
         }
-        let pt1000f = sum as f32 / oversampling as f32;
+        let pt1000f = sum as f32 / OVERSAMPLING as f32;
         
 
-        ctx.local.lcd.clear(ctx.local.del);
+        ctx.local.lcd.clear(ctx.local.del).unwrap_or_else(|c|{ERROR_CNT.fetch_add(1, Ordering::SeqCst);});
+
         
         let mut line0 = String::<16>::new();
         let mut line1 = String::<16>::new();
@@ -325,7 +331,7 @@ mod app {
         
         match pot {
             ..=0xC8 => {    //Unter 100 sperr ventil
-                //ctx.local.gp.setOutput(gpchannel::Channel0, val); // 0 oder 10V
+                ctx.local.gp.setOutput(gpchannel::Channel0, 0x000); // 0 oder 10V
 
             },
             0xC9..=0xF3C => { //map to 45 - 75 Grad C
@@ -354,23 +360,20 @@ mod app {
 
             },
             0xF3D..=u16::MAX => { //oeffne vollstaendig
-                //ctx.local.gp.setOutput(gpchannel::Channel0, val); //10 oder 0V >D
+                ctx.local.gp.setOutput(gpchannel::Channel0, 0xFFF); //10 oder 0V >D
 
             }
         }
         
 
-        //ctx.local.pid1.next_control_output();
-
         //let val = COUNTER_INT.fetch_add(100, Ordering::SeqCst);
         //let val: usize = COUNTER_INT.swap(0, Ordering::SeqCst);
 
-        //ctx.local.gp.setOutput(gpchannel::Channel0, val);
+        let errors = ERROR_CNT.fetch_add(0, Ordering::SeqCst);
 
-
-        //ctx.shared.s2.lock(|s2|{
-            //writeln!(s2, "last second: {}", val).ok();
-        //});
+        ctx.shared.s2.lock(|s2|{
+            writeln!(s2, "Error CNT: {}", errors).ok();
+        });
 
     }
 
@@ -409,6 +412,7 @@ mod app {
 
     #[panic_handler]
     fn panic(_info: &PanicInfo) -> ! {
+        //cortex_m::asm::bootload(vector_table)
         loop {}
     }
 
