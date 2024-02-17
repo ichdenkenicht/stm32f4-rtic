@@ -2,8 +2,11 @@
 #![no_main]
 #![no_std]
 #![allow(unused_imports)]
+#![feature(type_alias_impl_trait)]
 
 use rtic::app;
+
+
 
 mod gp8403;
 
@@ -14,7 +17,8 @@ mod app {
     use core::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
     use core::usize;
     
-
+    use rtic_monotonics::systick::Systick;
+    use rtic_sync::{channel::*, make_channel};
     use cortex_m;
     
     use rtic::export::CriticalSection;
@@ -34,7 +38,7 @@ mod app {
         timer::{CounterHz, Delay, Event as TimerEvent, Timer, Pwm, Channel, Channel1, Channel2, Channel3, Channel4, Flag, Counter},
         adc::{config::AdcConfig, config::SampleTime, Adc, config::*},
     };
-    use systick_monotonic::*;
+    //use systick_monotonic::*;
 
     use heapless::String;
 
@@ -46,7 +50,7 @@ mod app {
 
     use hd44780_driver::{Cursor, CursorBlink, Display, DisplayMode, HD44780};
 
-    
+    const CAPACITY: usize = 5;
     
 
     //use shared_bus;
@@ -82,13 +86,15 @@ mod app {
         lcd: HD44780<hd44780_driver::bus::I2CBus<I2c<pac::I2C3>>>,
         del: Delay<pac::TIM4, 1000000>,
 
+        sender1: Sender<'static, (f32, f32), CAPACITY>,
+
     }
 
-    #[monotonic(binds = SysTick, default = true)]
-    type Tonic = Systick<1000>;
+    //#[monotonic(binds = SysTick, default = true)]
+    //type Tonic = Systick<1000>;
 
     #[init]
-    fn init(mut ctx: init::Context) -> (Shared, Local, init::Monotonics) {
+    fn init(mut ctx: init::Context) -> (Shared, Local) {
 
         let mut sys_cfg = ctx.device.SYSCFG.constrain();
         //RCC
@@ -148,6 +154,8 @@ mod app {
         .unwrap();
         writeln!(s2, "Init... s2").ok();
         
+        let mono_token = rtic_monotonics::create_systick_token!();
+        let mono = Systick::start(ctx.core.SYST, 100_000_000, mono_token);
 
         //TIMER3
         // 16 bit Timer 3
@@ -266,10 +274,10 @@ mod app {
         //writeln!(s2, "{:#?}", time).unwrap();
 
         
+        let (cs1, cr1) = make_channel!((f32, f32), CAPACITY);
+        let (cs2, cr2) = make_channel!(String::<16>, CAPACITY);
 
-        //tim3.start(1_000u32.millis()).ok();
-        //tim3.start(1u32.secs()).ok();
-        tim3.start(1.Hz()).ok();
+
         
 
         //Button Interrupt
@@ -278,10 +286,12 @@ mod app {
         pin_a0.trigger_on_edge(&mut ctx.device.EXTI, Edge::Falling);
         pin_a0.enable_interrupt(&mut ctx.device.EXTI);
 
-
-        let mono = Systick::new(ctx.core.SYST, 100_000_000);
+        lcd::spawn(cr1, cr2).unwrap();
+        //tim3.start(1_000u32.millis()).ok();
+        //tim3.start(1u32.secs()).ok();
+        tim3.start(1.Hz()).ok();
         
-        (Shared {s2}, Local {led, tim3, pin_a0, pid1, pin_a5, adc, pin_b0, lcd, del, pin_a7, gp}, init::Monotonics(mono))
+        (Shared {s2}, Local {led, tim3, pin_a0, pid1, pin_a5, adc, pin_b0, lcd, del, pin_a7, gp, sender1: cs1.clone()})
     }
 
     // Background task, runs whenever no other tasks are running
@@ -292,8 +302,24 @@ mod app {
         }
     }
 
+    #[task(local = [lcd, del], priority = 2)]
+    async fn lcd(ctx: lcd::Context, mut receiver1: Receiver<'static, (f32, f32), CAPACITY>, mut receiver2: Receiver<'static, String::<16>, CAPACITY>) {
+        while let Ok(val) = receiver1.recv().await {
+            let mut line0 = String::<16>::new();
+            write!(line0, "S:{:.1} I:{:.1}", val.0, val.1);
+            ctx.local.lcd.set_cursor_xy((0,0), ctx.local.del);
+            ctx.local.lcd.write_str(&line0 ,ctx.local.del);
+                
+
+        }
+        while let Ok(val) = receiver2.recv().await {
+            ctx.local.lcd.set_cursor_xy((0,1), ctx.local.del);
+            ctx.local.lcd.write_str(&val ,ctx.local.del);
+        }
+    }
+
     //Timer3 Interrupt
-    #[task(binds = TIM3, local = [tim3, led, pid1, adc, pin_b0, lcd, del, pin_a7, gp], shared = [s2], priority = 6)]
+    #[task(binds = TIM3, local = [tim3, led, pid1, adc, pin_b0, pin_a7, gp, sender1], shared = [s2], priority = 6)]
     fn on_tim3(mut ctx: on_tim3::Context) {
         ctx.local.tim3.clear_flags(Flag::Update);
         
@@ -319,10 +345,10 @@ mod app {
         let pt1000f = sum as f32 / OVERSAMPLING as f32;
         
 
-        ctx.local.lcd.clear(ctx.local.del).unwrap_or_else(|c|{ERROR_CNT.fetch_add(1, Ordering::SeqCst);});
+        //ctx.local.lcd.clear(ctx.local.del).unwrap_or_else(|c|{ERROR_CNT.fetch_add(1, Ordering::SeqCst);});
 
         
-        let mut line0 = String::<16>::new();
+        
         let mut line1 = String::<16>::new();
 
         //write!(line0, "{}", pot);
@@ -336,9 +362,10 @@ mod app {
             },
             0xC9..=0xF3C => { //map to 45 - 75 Grad C
                 let nextsetpoint = (((pot as f32) - 201.0) * (75.0 - 45.0) / (3900.0 - 201.0)) + 45.0;
-                let pt1000temp =  ((pt1000f * 0.3029) - 625.70);
+                let mut pt1000temp =  ((pt1000f * 0.3029) - 625.70);
+                pt1000temp = pt1000temp.clamp(5.0, 100.0);
 
-
+                ctx.local.sender1.try_send((nextsetpoint, pt1000temp)).ok();
                 
                 let nco = ctx.local.pid1.next_control_output(pt1000temp);
                 ctx.local.pid1.setpoint(nextsetpoint);
@@ -346,9 +373,9 @@ mod app {
 
                 
                 //write!(line1, "I: {:.1}", pt1000temp);
-                write!(line0, "S:{:.1} I:{:.1}", nextsetpoint, pt1000temp);
+                //write!(line0, "S:{:.1} I:{:.1}", nextsetpoint, pt1000temp);
 
-                ctx.local.lcd.write_str(&line0 ,ctx.local.del);
+                //ctx.local.lcd.write_str(&line0 ,ctx.local.del);
                 //ctx.local.lcd.set_cursor_xy((0,1), ctx.local.del);
                 //ctx.local.lcd.write_str(&line1 ,ctx.local.del);
 

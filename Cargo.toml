@@ -5,12 +5,16 @@ authors = ["Dix Goerlich"]
 edition = "2021"
 
 [dependencies]
-cortex-m-rtic = "1.1.4" #Last 1.* Version is 1.1.4
-systick-monotonic = "1.0.1"
+#cortex-m-rtic = "1.1.4" #Last 1.* Version is 1.1.4
+#systick-monotonic = "1.0.1"
+
+rtic = { version = "2.0.1", features = [ "thumbv7-backend" ] }
+rtic-sync = "1.2.0"
+rtic-monotonics = { version = "1.5.0", features = [ "cortex-m-systick" ]}
 
 ###peripherals
 #shared bus
-shared-bus = {version = "*", features = ["cortex-m"]}
+#shared-bus = {version = "*", features = ["cortex-m"]}
 #ADS1115
 #ads1x1x = "0.2.2"
 #ds3231
