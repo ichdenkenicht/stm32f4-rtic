@@ -10,7 +10,7 @@ use rtic::app;
 
 mod gp8403;
 
-#[app(device = stm32f4xx_hal::pac, peripherals = true, dispatchers = [SPI4, SPI5])]
+#[app(device = stm32f4xx_hal::pac, peripherals = true, dispatchers = [SPI4, SPI5, SPI3, I2C2_ER, I2C2_EV])]
 mod app {
     use core::fmt::{Write, write};
     use core::panic::PanicInfo;
@@ -55,9 +55,11 @@ mod app {
 
     //use shared_bus;
 
-    static COUNTER_INT: AtomicU16 = AtomicU16::new(0);
-    static ERROR_CNT: AtomicUsize = AtomicUsize::new(0);
-    
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    //static ERROR_CNT: AtomicUsize = AtomicUsize::new(0);
+    static PT1000A: AtomicUsize = AtomicUsize::new(0);  //Atomic for PT1000
+    static POTA: AtomicUsize = AtomicUsize::new(0);     //Atomic for Potentiometer
+    static VALVEA: AtomicUsize = AtomicUsize::new(0);     //Atomic for Valve Return
 
     #[shared]
     struct Shared {
@@ -74,6 +76,7 @@ mod app {
         // pin_a4: Pin<'A', 4, Input>, //10V return from valve
 
         tim3: CounterHz<pac::TIM3>,
+        tim5: Counter<pac::TIM5, 1000000>,
 
         adc: Adc<pac::ADC1>,
         pin_b0: Pin<'B', 0, Analog>, //Pot
@@ -85,7 +88,7 @@ mod app {
         pid1: Pid<f32>,
 
         lcd: HD44780<hd44780_driver::bus::I2CBus<I2c<pac::I2C3>>>,
-        del: Delay<pac::TIM4, 1000000>,
+        del: Delay<pac::TIM10, 1000000>,
 
         sender1: Sender<'static, (f32, f32), CAPACITY>,
         sender2: Sender<'static, String::<16>, CAPACITY>,
@@ -156,29 +159,40 @@ mod app {
         .unwrap();
         writeln!(s2, "Init... s2").ok();
         
+
+        //Timers
+
         let mono_token = rtic_monotonics::create_systick_token!();
         let mono = Systick::start(ctx.core.SYST, 100_000_000, mono_token);
 
         //TIMER3
         // 16 bit Timer 3
+        //interrupt capable
         let mut tim3 = ctx.device.TIM3.counter_hz(&clocks);
         tim3.listen_only(TimerEvent::Update);
-        writeln!(s2, "tim3 ok").ok();
         
         // Timer9
         // 16bit only up
         //let mut tim9 = ctx.device.TIM9.counter_ms(&clocks);
         //tim9.start(10u32.secs()).unwrap();
 
+
+        //TIMER4
+        // 16 bit Timer 4
+        //interrupt capable
+        let mut tim5 = ctx.device.TIM5.counter_us(&clocks);
+        tim5.listen_only(TimerEvent::Update);
+
+        writeln!(s2, "timers ok").ok();
+
         //TIMER4
         // 16 bit Timer 4
         //let mut tim4 = ctx.device.TIM4.counter_hz(&clocks);
         //tim4.listen(Event::Update);
 
-        let mut del = ctx.device.TIM4.delay_us(&clocks);
+        let mut del = ctx.device.TIM10.delay_us(&clocks);
         
-
-        let del2 = ctx.device.TIM9.delay_us(&clocks);
+        let del2 = ctx.device.TIM11.delay_us(&clocks);
         writeln!(s2, "delay ok").ok();
 
         
@@ -293,13 +307,16 @@ mod app {
         lcd::spawn(cr1, cr2).unwrap();
         //tim3.start(1_000u32.millis()).ok();
         //tim3.start(1u32.secs()).ok();
-        tim3.start(1.Hz()).ok();
-
-        let mut s_ok = String::<16>::new();
-        write!(s_ok, "Ok").ok();
-        cs2.try_send(s_ok).ok();
+        //tim3.start(1.Hz()).ok();
         
-        (Shared {s2}, Local {led, tim3, pin_a0, pid1, pin_a5, adc, pin_b0, lcd, del, pin_a7, gp, sender1: cs1.clone(), sender2: cs2.clone()})
+        tim5.start(100.millis()).ok();
+        
+
+        //let mut s_ok = String::<16>::new();
+        //write!(s_ok, "Ok").ok();
+        //cs2.try_send(s_ok).ok();
+        
+        (Shared {s2}, Local {led, tim3, tim5, pin_a0, pid1, pin_a5, adc, pin_b0, lcd, del, pin_a7, gp, sender1: cs1.clone(), sender2: cs2.clone()})
     }
 
     // Background task, runs whenever no other tasks are running
@@ -310,22 +327,118 @@ mod app {
         }
     }
 
+    //Timer5 Interrupt
+    #[task(binds = TIM5, local = [tim5, adc, pin_b0, pin_a7, led], shared = [s2], priority = 7)]
+    fn on_tim5(mut ctx: on_tim5::Context) {
+        ctx.local.tim5.clear_flags(Flag::Update);
+
+        ctx.local.led.toggle();
+
+        let cnt = COUNTER.fetch_add(1, Ordering::SeqCst);
+        
+
+
+        const OVERSAMPLING: usize = 4;
+
+        //Pot - bin_b0
+        let mut pot = 0usize;
+        for _ in 0..OVERSAMPLING{
+            pot += ctx.local.adc.convert(ctx.local.pin_b0, SampleTime::Cycles_480) as usize;
+        }
+        pot = pot / 4;
+
+        POTA.fetch_add(pot, Ordering::SeqCst);
+
+
+        //PT1000 - pin_a7
+        let mut pt1000 = 0usize;
+        for i in 0..OVERSAMPLING{
+            pt1000 += ctx.local.adc.convert(ctx.local.pin_a7, SampleTime::Cycles_480) as usize;
+        }
+        pt1000 = pt1000 / 4;
+
+        PT1000A.fetch_add(pt1000, Ordering::SeqCst);
+
+
+        if cnt == 9 {
+            COUNTER.swap(0, Ordering::SeqCst);
+            let pt1 = PT1000A.swap(0, Ordering::SeqCst) / 10;
+            let pot = POTA.swap(0, Ordering::SeqCst) / 10;
+
+            if pt1 > 4000 {
+                //send error and return
+            }
+
+            let nextsetpoint = (((pot as f32) - 201.0) * (75.0 - 45.0) / (3900.0 - 201.0)) + 45.0;
+            let mut pt1000temp =  ((pt1 as f32 * 0.3029) - 625.70);
+            pt1000temp = pt1000temp.clamp(5.0, 100.0);
+
+
+            ctx.shared.s2.lock(|s2|{
+                writeln!(s2, "pt1000 raw:{} pot raw: {}", pt1, pot).ok();
+                writeln!(s2, "S: {} I: {}", nextsetpoint, pt1000temp).ok();
+            });
+
+            pidf::spawn(nextsetpoint, pt1000temp).ok();
+        }
+
+    }
+
+
+    #[task(local = [pid1, gp, sender1, sender2], shared = [s2], priority = 3)]
+    async fn pidf(mut ctx: pidf::Context, setpoint: f32, istpoint: f32) {
+        
+        match setpoint {
+            ..=45.0 => {
+                ctx.local.gp.setOutput(gpchannel::Channel0, 0x000).ok(); // 0 oder 10V
+            },
+            45.0..=75.0 => {
+                
+                ctx.local.sender1.try_send((setpoint, istpoint)).ok();
+
+
+                let nco = ctx.local.pid1.next_control_output(istpoint);
+                ctx.local.pid1.setpoint(setpoint);
+
+                //let out = ((nco.output*40.96)+2048.0).clamp(0.0, 4095.0) as u16;
+                let out = ((nco.output*73.146)+2048.0).clamp(0.0, 4095.0) as u16;
+
+                ctx.local.gp.setOutput(gpchannel::Channel0, out).ok();
+
+            },
+            75.0.. => {
+                ctx.local.gp.setOutput(gpchannel::Channel0, 0xFFF).ok(); // 0 oder 10V
+            },
+            _ => {
+
+            }
+        }
+
+        ctx.shared.s2.lock(|s2|{
+            writeln!(s2, "pidf run").ok();
+        });
+
+    }
+
+
     #[task(local = [lcd, del], priority = 2)]
     async fn lcd(ctx: lcd::Context, mut receiver1: Receiver<'static, (f32, f32), CAPACITY>, mut receiver2: Receiver<'static, String::<16>, CAPACITY>) {
+        
         while let Ok(val) = receiver1.recv().await {
             let mut line0 = String::<16>::new();
             write!(line0, "S:{:.1} I:{:.1}", val.0, val.1);
             ctx.local.lcd.set_cursor_xy((0,0), ctx.local.del);
             ctx.local.lcd.write_str(&line0 ,ctx.local.del);
-                
-            if let Ok(val) = receiver2.recv().await {
+
+            if let Ok(val) = receiver2.try_recv() {
                 ctx.local.lcd.set_cursor_xy((0,1), ctx.local.del);
                 ctx.local.lcd.write_str(&val ,ctx.local.del);
-            }
-        }
+            };
 
+        }
     }
 
+    /*
     //Timer3 Interrupt
     #[task(binds = TIM3, local = [tim3, led, pid1, adc, pin_b0, pin_a7, gp, sender1, sender2], shared = [s2], priority = 6)]
     fn on_tim3(mut ctx: on_tim3::Context) {
@@ -412,6 +525,7 @@ mod app {
         //});
 
     }
+    */
 
     #[task(binds = EXTI0, local = [pin_a0], shared = [s2])]
     fn on_button(mut ctx: on_button::Context){
