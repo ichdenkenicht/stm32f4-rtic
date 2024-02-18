@@ -88,6 +88,7 @@ mod app {
         del: Delay<pac::TIM4, 1000000>,
 
         sender1: Sender<'static, (f32, f32), CAPACITY>,
+        sender2: Sender<'static, String::<16>, CAPACITY>,
 
     }
 
@@ -213,7 +214,7 @@ mod app {
         let mut gp = GP8403Driver::new(i2c1, Addr::A58);
 
         gp.setOutputRange(OutputRange::V10).unwrap_or_else(|c|{writeln!(s2, "{:?}", c).ok(); loop{}});
-        gp.setOutput(gpchannel::Channel0, 0xEA0).unwrap_or_else(|c|{writeln!(s2, "{:?}", c).ok(); loop{}});
+        gp.setOutput(gpchannel::Channel0, 0x7FF).unwrap_or_else(|c|{writeln!(s2, "{:?}", c).ok(); loop{}});
 
 
         
@@ -287,17 +288,18 @@ mod app {
         pin_a0.trigger_on_edge(&mut ctx.device.EXTI, Edge::Falling);
         pin_a0.enable_interrupt(&mut ctx.device.EXTI);
 
-        let mut s_ok = String::<16>::new();
-        write!(s_ok, "Ok").ok();
 
-        cs2.try_send(s_ok).ok();
 
         lcd::spawn(cr1, cr2).unwrap();
         //tim3.start(1_000u32.millis()).ok();
         //tim3.start(1u32.secs()).ok();
         tim3.start(1.Hz()).ok();
+
+        let mut s_ok = String::<16>::new();
+        write!(s_ok, "Ok").ok();
+        cs2.try_send(s_ok).ok();
         
-        (Shared {s2}, Local {led, tim3, pin_a0, pid1, pin_a5, adc, pin_b0, lcd, del, pin_a7, gp, sender1: cs1.clone()})
+        (Shared {s2}, Local {led, tim3, pin_a0, pid1, pin_a5, adc, pin_b0, lcd, del, pin_a7, gp, sender1: cs1.clone(), sender2: cs2.clone()})
     }
 
     // Background task, runs whenever no other tasks are running
@@ -325,7 +327,7 @@ mod app {
     }
 
     //Timer3 Interrupt
-    #[task(binds = TIM3, local = [tim3, led, pid1, adc, pin_b0, pin_a7, gp, sender1], shared = [s2], priority = 6)]
+    #[task(binds = TIM3, local = [tim3, led, pid1, adc, pin_b0, pin_a7, gp, sender1, sender2], shared = [s2], priority = 6)]
     fn on_tim3(mut ctx: on_tim3::Context) {
         ctx.local.tim3.clear_flags(Flag::Update);
         
@@ -334,7 +336,7 @@ mod app {
 
         //ctx.local.pin_a5.toggle();
 
-        let pot = ctx.local.adc.convert(ctx.local.pin_b0, SampleTime::Cycles_56);
+        let pot = ctx.local.adc.convert(ctx.local.pin_b0, SampleTime::Cycles_480);
         //let valve = ctx.local.adc.convert(ctx.local.pin_a4, SampleTime::Cycles_56);
 
         const OVERSAMPLING: usize = 60;
@@ -349,21 +351,21 @@ mod app {
             sum += pt1000[u] as u32;
         }
         let pt1000f = sum as f32 / OVERSAMPLING as f32;
-        
 
-        //ctx.local.lcd.clear(ctx.local.del).unwrap_or_else(|c|{ERROR_CNT.fetch_add(1, Ordering::SeqCst);});
+        if pt1000f > 4000.0 {
+            let mut s = String::<16>::new();
+            write!(s, "Error PT1000");
+            ctx.local.sender2.try_send(s);
+            return;
+        }
 
-        
-        
-        let mut line1 = String::<16>::new();
-
-        //write!(line0, "{}", pot);
-
-        //ctx.local.lcd.write_str(&line0 ,ctx.local.del);
         
         match pot {
             ..=0xC8 => {    //Unter 100 sperr ventil
                 ctx.local.gp.setOutput(gpchannel::Channel0, 0x000); // 0 oder 10V
+                let mut s = String::<16>::new();
+                write!(s, "Ventil gesperrt");
+                ctx.local.sender2.try_send(s);
 
             },
             0xC9..=0xF3C => { //map to 45 - 75 Grad C
@@ -381,16 +383,7 @@ mod app {
                 //let out = ((nco.output*40.96)+2048.0).clamp(0.0, 4095.0) as u16;
                 let out = ((nco.output*73.146)+2048.0).clamp(0.0, 4095.0) as u16;
 
-
                 ctx.local.gp.setOutput(gpchannel::Channel0, out).ok();
-
-                
-                //write!(line1, "I: {:.1}", pt1000temp);
-                //write!(line0, "S:{:.1} I:{:.1}", nextsetpoint, pt1000temp);
-
-                //ctx.local.lcd.write_str(&line0 ,ctx.local.del);
-                //ctx.local.lcd.set_cursor_xy((0,1), ctx.local.del);
-                //ctx.local.lcd.write_str(&line1 ,ctx.local.del);
 
                 ctx.shared.s2.lock(|s2|{
                     writeln!(s2, "raw: S: {} I: {:.4}", pot, pt1000f).ok();
@@ -402,7 +395,9 @@ mod app {
             },
             0xF3D..=u16::MAX => { //oeffne vollstaendig
                 ctx.local.gp.setOutput(gpchannel::Channel0, 0xFFF); //10 oder 0V >D
-
+                let mut s = String::<16>::new();
+                write!(s, "Ventil offen");
+                ctx.local.sender2.try_send(s);
             }
         }
         
@@ -410,11 +405,11 @@ mod app {
         //let val = COUNTER_INT.fetch_add(100, Ordering::SeqCst);
         //let val: usize = COUNTER_INT.swap(0, Ordering::SeqCst);
 
-        let errors = ERROR_CNT.fetch_add(0, Ordering::SeqCst);
+        //let errors = ERROR_CNT.fetch_add(0, Ordering::SeqCst);
 
-        ctx.shared.s2.lock(|s2|{
-            writeln!(s2, "Error CNT: {}", errors).ok();
-        });
+        //ctx.shared.s2.lock(|s2|{
+            //writeln!(s2, "Error CNT: {}", errors).ok();
+        //});
 
     }
 
