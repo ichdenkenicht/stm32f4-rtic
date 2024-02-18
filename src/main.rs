@@ -57,6 +57,7 @@ mod app {
 
     static COUNTER_INT: AtomicU16 = AtomicU16::new(0);
     static ERROR_CNT: AtomicUsize = AtomicUsize::new(0);
+    
 
     #[shared]
     struct Shared {
@@ -189,7 +190,7 @@ mod app {
         let i2c1 = ctx.device.I2C1.i2c(
             (pin_b6, pin_b7),
             i2cMode::Standard {
-                frequency: 40.kHz(),
+                frequency: 100.kHz(),
             },
             &clocks,
         );
@@ -212,10 +213,10 @@ mod app {
         let mut gp = GP8403Driver::new(i2c1, Addr::A58);
 
         gp.setOutputRange(OutputRange::V10).unwrap_or_else(|c|{writeln!(s2, "{:?}", c).ok(); loop{}});
-        gp.setOutput(gpchannel::Channel0, 0xFFF).unwrap_or_else(|c|{writeln!(s2, "{:?}", c).ok(); loop{}});
+        gp.setOutput(gpchannel::Channel0, 0xEA0).unwrap_or_else(|c|{writeln!(s2, "{:?}", c).ok(); loop{}});
 
 
-
+        
 
 
 
@@ -251,8 +252,8 @@ mod app {
         
         //PIDController
         let mut pid1: Pid<f32> = Pid::new(55.0, 50.0);   //maybe -50.0 - 50.0 -> +50 und /10 to get to 0 - 10 V?
-        pid1.p(0.20, 10.0);
-        pid1.i(0.08, 1.0);
+        pid1.p(0.30, 20.0);
+        pid1.i(0.08, 5.0);
         pid1.d(0.03, 3.0);
 
 
@@ -275,7 +276,7 @@ mod app {
 
         
         let (cs1, cr1) = make_channel!((f32, f32), CAPACITY);
-        let (cs2, cr2) = make_channel!(String::<16>, CAPACITY);
+        let (mut cs2, cr2) = make_channel!(String::<16>, CAPACITY);
 
 
         
@@ -285,6 +286,11 @@ mod app {
         pin_a0.make_interrupt_source(&mut sys_cfg);
         pin_a0.trigger_on_edge(&mut ctx.device.EXTI, Edge::Falling);
         pin_a0.enable_interrupt(&mut ctx.device.EXTI);
+
+        let mut s_ok = String::<16>::new();
+        write!(s_ok, "Ok").ok();
+
+        cs2.try_send(s_ok).ok();
 
         lcd::spawn(cr1, cr2).unwrap();
         //tim3.start(1_000u32.millis()).ok();
@@ -310,12 +316,12 @@ mod app {
             ctx.local.lcd.set_cursor_xy((0,0), ctx.local.del);
             ctx.local.lcd.write_str(&line0 ,ctx.local.del);
                 
+            if let Ok(val) = receiver2.recv().await {
+                ctx.local.lcd.set_cursor_xy((0,1), ctx.local.del);
+                ctx.local.lcd.write_str(&val ,ctx.local.del);
+            }
+        }
 
-        }
-        while let Ok(val) = receiver2.recv().await {
-            ctx.local.lcd.set_cursor_xy((0,1), ctx.local.del);
-            ctx.local.lcd.write_str(&val ,ctx.local.del);
-        }
     }
 
     //Timer3 Interrupt
@@ -331,11 +337,11 @@ mod app {
         let pot = ctx.local.adc.convert(ctx.local.pin_b0, SampleTime::Cycles_56);
         //let valve = ctx.local.adc.convert(ctx.local.pin_a4, SampleTime::Cycles_56);
 
-        const OVERSAMPLING: usize = 40;
+        const OVERSAMPLING: usize = 60;
 
         let mut pt1000 = [0u16; OVERSAMPLING];
         for i in 0..OVERSAMPLING{
-            pt1000[i] = ctx.local.adc.convert(ctx.local.pin_a7, SampleTime::Cycles_144);
+            pt1000[i] = ctx.local.adc.convert(ctx.local.pin_a7, SampleTime::Cycles_480);
         }
 
         let mut sum = 0u32;
@@ -364,6 +370,7 @@ mod app {
                 let nextsetpoint = (((pot as f32) - 201.0) * (75.0 - 45.0) / (3900.0 - 201.0)) + 45.0;
                 let mut pt1000temp =  ((pt1000f * 0.3029) - 625.70);
                 pt1000temp = pt1000temp.clamp(5.0, 100.0);
+                
 
                 ctx.local.sender1.try_send((nextsetpoint, pt1000temp)).ok();
                 
@@ -371,10 +378,11 @@ mod app {
                 ctx.local.pid1.setpoint(nextsetpoint);
 
 
-                let out = ((nco.output*40.96)+2048.0).clamp(0.0, 4095.0) as u16;
+                //let out = ((nco.output*40.96)+2048.0).clamp(0.0, 4095.0) as u16;
+                let out = ((nco.output*73.146)+2048.0).clamp(0.0, 4095.0) as u16;
 
 
-                ctx.local.gp.setOutput(gpchannel::Channel0, out);
+                ctx.local.gp.setOutput(gpchannel::Channel0, out).ok();
 
                 
                 //write!(line1, "I: {:.1}", pt1000temp);
@@ -388,6 +396,7 @@ mod app {
                     writeln!(s2, "raw: S: {} I: {:.4}", pot, pt1000f).ok();
                     writeln!(s2, "S: {} I: {}", nextsetpoint, pt1000temp).ok();
                     writeln!(s2, "{:#?}", nco).ok();
+                    writeln!(s2, "0-10V: {:X}", out).ok();
                 });
 
             },
