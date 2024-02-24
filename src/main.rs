@@ -267,8 +267,8 @@ mod app {
         
         //PIDController
         let mut pid1: Pid<f32> = Pid::new(55.0, 50.0);   //maybe -50.0 - 50.0 -> +50 und /10 to get to 0 - 10 V?
-        pid1.p(0.30, 20.0);
-        pid1.i(0.08, 5.0);
+        pid1.p(0.40, 20.0);
+        pid1.i(0.08, 10.0);
         pid1.d(0.03, 3.0);
 
 
@@ -360,10 +360,10 @@ mod app {
         PT1000A.fetch_add(pt1000, Ordering::SeqCst);
 
 
-        if cnt == 9 {
+        if cnt == 19 {
             COUNTER.swap(0, Ordering::SeqCst);
-            let pt1 = PT1000A.swap(0, Ordering::SeqCst) / 10;
-            let pot = POTA.swap(0, Ordering::SeqCst) / 10;
+            let pt1 = PT1000A.swap(0, Ordering::SeqCst) / 20;
+            let pot = POTA.swap(0, Ordering::SeqCst) / 20;
 
             if pt1 > 4000 {
                 //send error and return
@@ -390,7 +390,8 @@ mod app {
         
         match setpoint {
             ..=45.0 => {
-                ctx.local.gp.setOutput(gpchannel::Channel0, 0x000).ok(); // 0 oder 10V
+                ctx.local.gp.setOutput(gpchannel::Channel0, 0xFFF).ok(); // 0 oder 10V
+                // FFF bedeutet Kreis geschlossen
             },
             45.0..=75.0 => {
                 
@@ -401,22 +402,25 @@ mod app {
                 ctx.local.pid1.setpoint(setpoint);
 
                 //let out = ((nco.output*40.96)+2048.0).clamp(0.0, 4095.0) as u16;
-                let out = ((nco.output*73.146)+2048.0).clamp(0.0, 4095.0) as u16;
+                let out = ((-nco.output*130.146)+2048.0).clamp(0.0, 4095.0) as u16;
 
                 ctx.local.gp.setOutput(gpchannel::Channel0, out).ok();
 
+                ctx.shared.s2.lock(|s2|{
+                    writeln!(s2, "out: {}, nco: {:?}", out, nco).ok();
+                });
+
             },
             75.0.. => {
-                ctx.local.gp.setOutput(gpchannel::Channel0, 0xFFF).ok(); // 0 oder 10V
+                ctx.local.gp.setOutput(gpchannel::Channel0, 0x000).ok(); // 0 oder 10V
+                // 0x000 bedeutet Kreis offen
             },
             _ => {
 
             }
         }
 
-        ctx.shared.s2.lock(|s2|{
-            writeln!(s2, "pidf run").ok();
-        });
+
 
     }
 
