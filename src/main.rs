@@ -385,13 +385,13 @@ mod app {
     }
 
 
-    #[task(local = [pid1, gp, sender1, sender2], shared = [s2], priority = 3)]
+    #[task(local = [pid1, gp, sender1, sender2, out: u16 = 2048], shared = [s2], priority = 3)]
     async fn pidf(mut ctx: pidf::Context, setpoint: f32, istpoint: f32) {
         
         match setpoint {
             ..=45.0 => {
                 ctx.local.gp.setOutput(gpchannel::Channel0, 0xFFF).ok(); // 0 oder 10V
-                // FFF bedeutet Kreis geschlossen
+                // 0xFFF bedeutet Kreis geschlossen
             },
             45.0..=75.0 => {
                 
@@ -402,12 +402,16 @@ mod app {
                 ctx.local.pid1.setpoint(setpoint);
 
                 //let out = ((nco.output*40.96)+2048.0).clamp(0.0, 4095.0) as u16;
-                let out = ((-nco.output*130.146)+2048.0).clamp(0.0, 4095.0) as u16;
+                //let out = ((-nco.output*130.146)+2048.0).clamp(0.0, 4095.0) as u16;
 
-                ctx.local.gp.setOutput(gpchannel::Channel0, out).ok();
+                *ctx.local.out += nco.output as u16;
+
+                *ctx.local.out = *ctx.local.out.clamp(&mut 0u16, &mut 4095u16);
+
+                ctx.local.gp.setOutput(gpchannel::Channel0, *ctx.local.out).ok();
 
                 ctx.shared.s2.lock(|s2|{
-                    writeln!(s2, "out: {}, nco: {:?}", out, nco).ok();
+                    writeln!(s2, "out: {}, nco: {:?}", *ctx.local.out, nco).ok();
                 });
 
             },
