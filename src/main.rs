@@ -60,6 +60,7 @@ mod app {
     static PT1000A: AtomicUsize = AtomicUsize::new(0);  //Atomic for PT1000
     static POTA: AtomicUsize = AtomicUsize::new(0);     //Atomic for Potentiometer
     static VALVEA: AtomicUsize = AtomicUsize::new(0);     //Atomic for Valve Return
+    static OUTP: AtomicU16 = AtomicU16::new(2048);
 
     #[shared]
     struct Shared {
@@ -267,8 +268,8 @@ mod app {
         
         //PIDController
         let mut pid1: Pid<f32> = Pid::new(55.0, 50.0);   //maybe -50.0 - 50.0 -> +50 und /10 to get to 0 - 10 V?
-        pid1.p(0.40, 20.0);
-        pid1.i(0.08, 10.0);
+        pid1.p(0.80, 20.0);
+        pid1.i(0.25, 2.0);
         pid1.d(0.03, 3.0);
 
 
@@ -385,7 +386,7 @@ mod app {
     }
 
 
-    #[task(local = [pid1, gp, sender1, sender2, out: u16 = 2048], shared = [s2], priority = 3)]
+    #[task(local = [pid1, gp, sender1, sender2, out: i16 = 3856], shared = [s2], priority = 3)]
     async fn pidf(mut ctx: pidf::Context, setpoint: f32, istpoint: f32) {
         
         match setpoint {
@@ -404,11 +405,11 @@ mod app {
                 //let out = ((nco.output*40.96)+2048.0).clamp(0.0, 4095.0) as u16;
                 //let out = ((-nco.output*130.146)+2048.0).clamp(0.0, 4095.0) as u16;
 
-                *ctx.local.out += nco.output as u16;
+                *ctx.local.out -= nco.output as i16;
+                *ctx.local.out = *ctx.local.out.clamp(&mut 0i16, &mut 4095i16);
 
-                *ctx.local.out = *ctx.local.out.clamp(&mut 0u16, &mut 4095u16);
-
-                ctx.local.gp.setOutput(gpchannel::Channel0, *ctx.local.out).ok();
+            
+                ctx.local.gp.setOutput(gpchannel::Channel0, *ctx.local.out as u16).ok();
 
                 ctx.shared.s2.lock(|s2|{
                     writeln!(s2, "out: {}, nco: {:?}", *ctx.local.out, nco).ok();
