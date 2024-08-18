@@ -23,7 +23,7 @@ mod app {
         rtc::{self, Rtc},
         serial::{Config, Serial},
         spi::{self, Mode as spiMode, Spi},
-        timer::{CounterHz, Delay, Event, Timer},
+        timer::{CounterHz, Delay, Event as TimerEvent, Timer, Pwm, Channel, Channel1, Channel2, Channel3, Channel4, Flag, Counter},
         adc::{config::AdcConfig, config::SampleTime, Adc, config::*},
     };
     use systick_monotonic::*;
@@ -96,13 +96,13 @@ mod app {
         //TIMER3
         // 16 bit Timer 3u
         let mut tim3 = ctx.device.TIM3.counter_hz(&clocks);
-        tim3.listen(Event::Update);
+        tim3.listen_only(TimerEvent::Update);
         
 
         //TIMER4
         // 16 bit Timer 4
         let mut tim4 = ctx.device.TIM4.counter_hz(&clocks);
-        tim4.listen(Event::Update);
+        tim4.listen_only(TimerEvent::Update);
 
 
 
@@ -153,7 +153,7 @@ mod app {
     //Timer3 Interrupt
     #[task(binds = TIM3, local = [tim3, led], shared = [s2], priority = 6)]
     fn on_tim3(mut ctx: on_tim3::Context) {
-        ctx.local.tim3.clear_interrupt(Event::Update);
+        ctx.local.tim3.clear_flags(Flag::Update);
         ctx.local.led.toggle();
 
     }
