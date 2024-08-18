@@ -28,7 +28,7 @@ rtic-monotonics = { version = "1.5.0", features = [ "cortex-m-systick" ]}
 # PID Controller
 pid = "*"
 
-embedded-hal = "1.0.0"
+embedded-hal = "1"
 
 
 #PowerMeterLib
@@ -44,9 +44,11 @@ embedded-hal = "1.0.0"
 
 
 hd44780-driver = { path = "../hd44780-driver", version = "*"}
+max31865-rs = { path = "../max31865-rs", version = "*"}
 
 cortex-m = "*"
 heapless = "0.8.0"
+embedded-hal-bus = "0.2.0"
 
 [dependencies.stm32f4xx-hal]
 version = "0.20.0"

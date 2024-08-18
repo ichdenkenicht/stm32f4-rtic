@@ -9,6 +9,7 @@ use rtic::app;
 
 
 mod gp8403;
+use max31865_rs;
 
 #[app(device = stm32f4xx_hal::pac, peripherals = true, dispatchers = [SPI4, SPI5, SPI3, I2C2_ER, I2C2_EV])]
 mod app {
@@ -41,6 +42,8 @@ mod app {
     //use systick_monotonic::*;
 
     use heapless::String;
+
+    use embedded_hal_bus::spi::ExclusiveDevice;
 
     use pid::Pid;
 
@@ -82,7 +85,7 @@ mod app {
         adc: Adc<pac::ADC1>,
         pin_b0: Pin<'B', 0, Analog>, //Pot
         //pin_a4: Pin<'A', 4, Analog>, //Valve
-        pin_a7: Pin<'A', 7, Analog>, //PT1000
+        //pin_a7: Pin<'A', 7, Analog>, //PT1000
 
         gp: GP8403Driver<I2c<pac::I2C1>>,
 
@@ -120,6 +123,8 @@ mod app {
 
         let mut led = gpioc.pc13.into_push_pull_output();
         led.set_high();
+
+        
 
         //UART1
         //PA10 -> RX1
@@ -262,9 +267,38 @@ mod app {
         //let _ = lcd.write_str("Hello, world!", &mut del);
         //lcd.set_cursor_xy((0,1), &mut del);
         //let _ = lcd.write_str("test123!", &mut del);
-        
 
+
+        //SPI2
+        //CS
+        let mut pin_b12 = gpiob.pb12.into_push_pull_output().speed(Speed::VeryHigh);
+        pin_b12.set_high();
+
+        let pin_b13 = gpiob.pb13.into_alternate().speed(Speed::VeryHigh); //SCK2
+        let pin_b14 = gpiob.pb14.into_alternate().speed(Speed::VeryHigh); //MISO2
+        let pin_b15 = gpiob.pb15.into_alternate().speed(Speed::VeryHigh); //MOSI2
+
+        let mode = spiMode {
+            polarity: spi::Polarity::IdleLow,
+            phase: spi::Phase::CaptureOnFirstTransition,
+        };
+
+        let mut spi2 = ctx
+            .device
+            .SPI2
+            .spi((pin_b13, pin_b14, pin_b15), mode, 10.MHz(), &clocks);
+
+        let ex_spi2 = ExclusiveDevice::new(spi2, pin_b12, del2).unwrap();
         
+        let mut mx31 = max31865_rs::MAX31865::new(ex_spi2, 430);
+        
+        mx31.set_filter(max31865_rs::FILTER::HZ50);
+        mx31.set_wire(max31865_rs::WIRE3::WIRE_3);
+        mx31.set_vbias(max31865_rs::VBIAS::OFF);
+        mx31.set_mode(max31865_rs::MODE::AUTO);
+
+        writeln!(s2, "{:#?}", mx31.measure_temp());
+
         
         //PIDController
         let mut pid1: Pid<f32> = Pid::new(55.0, 50.0);   //maybe -50.0 - 50.0 -> +50 und /10 to get to 0 - 10 V?
@@ -277,7 +311,7 @@ mod app {
         //ADC
         let pin_b0 = gpiob.pb0.into_analog(); //Potentiometer Sense
         let pin_a4 = gpioa.pa4.into_analog(); //return from Valve Sense
-        let pin_a7 = gpioa.pa7.into_analog(); //PT1000
+        //let pin_a7 = gpioa.pa7.into_analog(); //PT1000
 
         let adc = Adc::adc1(ctx.device.ADC1, true, AdcConfig::default());
         writeln!(s2, "ADC ok").ok();
@@ -317,7 +351,7 @@ mod app {
         //write!(s_ok, "Ok").ok();
         //cs2.try_send(s_ok).ok();
         
-        (Shared {s2}, Local {led, tim3, tim5, pin_a0, pid1, pin_a5, adc, pin_b0, lcd, del, pin_a7, gp, sender1: cs1.clone(), sender2: cs2.clone()})
+        (Shared {s2}, Local {led, tim3, tim5, pin_a0, pid1, pin_a5, adc, pin_b0, lcd, del, gp, sender1: cs1.clone(), sender2: cs2.clone()})
     }
 
     // Background task, runs whenever no other tasks are running
@@ -329,7 +363,7 @@ mod app {
     }
 
     //Timer5 Interrupt
-    #[task(binds = TIM5, local = [tim5, adc, pin_b0, pin_a7, led], shared = [s2], priority = 7)]
+    #[task(binds = TIM5, local = [tim5, adc, pin_b0, led], shared = [s2], priority = 7)]
     fn on_tim5(mut ctx: on_tim5::Context) {
         ctx.local.tim5.clear_flags(Flag::Update);
 
@@ -352,13 +386,13 @@ mod app {
 
 
         //PT1000 - pin_a7
-        let mut pt1000 = 0usize;
-        for i in 0..OVERSAMPLING{
-            pt1000 += ctx.local.adc.convert(ctx.local.pin_a7, SampleTime::Cycles_480) as usize;
-        }
-        pt1000 = pt1000 / 4;
+        //let mut pt1000 = 0usize;
+        //for i in 0..OVERSAMPLING{
+        //    pt1000 += ctx.local.adc.convert(ctx.local.pin_a7, SampleTime::Cycles_480) as usize;
+        //}
+        //pt1000 = pt1000 / 4;
 
-        PT1000A.fetch_add(pt1000, Ordering::SeqCst);
+        //PT1000A.fetch_add(pt1000, Ordering::SeqCst);
 
 
         if cnt == 19 {
