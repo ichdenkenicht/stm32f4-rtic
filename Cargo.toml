@@ -31,6 +31,27 @@ systick-monotonic = "1.0.1"
 #version = "0.1.2"
 #features = ["cortex-m"]
 
+
+
+
+embedded-hal-bus = "0.2.0"
+
+enc28j60 = { path = "../enc28j60", version = "*"}
+heapless = "0.8.0"
+
+[dependencies.smoltcp]
+default-features = false
+features = [
+    "defmt",
+    "proto-ipv6",
+    #"proto-ipv4",
+    #"socket-tcp",
+    "socket-udp",
+    "medium-ethernet",
+]
+version = "0.11"
+
+
 [dependencies.stm32f4xx-hal]
 version = "0.21"
 features = ["stm32f411", "rtic1"]
